@@ -8,6 +8,13 @@ import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.net.wifi.ScanResult
+import android.net.wifi.WifiConfiguration
+import android.text.InputType
+import android.widget.EditText
+import android.widget.ScrollView
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -316,6 +323,116 @@ class AvatarDrawable : Drawable() {
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
 
+/** Simple white glyphs drawn on the coloured badges of the Settings menu. */
+class GlyphDrawable(private val kind: Int) : Drawable() {
+    companion object {
+        const val TV = 0
+        const val MOON = 1
+        const val REMOTE = 2
+        const val GRID = 3
+        const val INFO = 4
+        const val HOME = 5
+    }
+
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val path = Path()
+    private val r = RectF()
+
+    override fun draw(c: Canvas) {
+        val b = bounds
+        if (b.isEmpty) return
+        val w = b.width().toFloat()
+        val h = b.height().toFloat()
+        val x0 = b.left.toFloat()
+        val y0 = b.top.toFloat()
+        val cx = x0 + w / 2f
+        paint.color = Color.WHITE
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+        paint.strokeWidth = w * 0.09f
+        when (kind) {
+            TV -> {
+                paint.style = Paint.Style.STROKE
+                r.set(x0 + w * 0.06f, y0 + h * 0.14f, x0 + w * 0.94f, y0 + h * 0.70f)
+                c.drawRoundRect(r, w * 0.1f, w * 0.1f, paint)
+                c.drawLine(x0 + w * 0.32f, y0 + h * 0.88f, x0 + w * 0.68f, y0 + h * 0.88f, paint)
+            }
+            MOON -> {
+                paint.style = Paint.Style.FILL
+                val rr = w * 0.40f
+                val cy = y0 + h / 2f
+                path.reset()
+                path.addCircle(cx, cy, rr, Path.Direction.CW)
+                val cut = Path()
+                cut.addCircle(cx + rr * 0.55f, cy - rr * 0.35f, rr * 0.85f, Path.Direction.CW)
+                path.op(cut, Path.Op.DIFFERENCE)
+                c.drawPath(path, paint)
+            }
+            REMOTE -> {
+                paint.style = Paint.Style.STROKE
+                r.set(x0 + w * 0.30f, y0 + h * 0.04f, x0 + w * 0.70f, y0 + h * 0.96f)
+                c.drawRoundRect(r, w * 0.14f, w * 0.14f, paint)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(cx, y0 + h * 0.30f, w * 0.085f, paint)
+                c.drawCircle(cx, y0 + h * 0.58f, w * 0.05f, paint)
+                c.drawCircle(cx, y0 + h * 0.76f, w * 0.05f, paint)
+            }
+            GRID -> {
+                paint.style = Paint.Style.FILL
+                for (i in 0 until 2) {
+                    for (j in 0 until 2) {
+                        val l = x0 + w * (0.08f + i * 0.44f)
+                        val t = y0 + h * (0.08f + j * 0.44f)
+                        r.set(l, t, l + w * 0.40f, t + h * 0.40f)
+                        c.drawRoundRect(r, w * 0.1f, w * 0.1f, paint)
+                    }
+                }
+            }
+            INFO -> {
+                paint.style = Paint.Style.STROKE
+                c.drawCircle(cx, y0 + h / 2f, w * 0.42f, paint)
+                c.drawLine(cx, y0 + h * 0.46f, cx, y0 + h * 0.72f, paint)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(cx, y0 + h * 0.30f, w * 0.055f, paint)
+            }
+            else -> { // HOME
+                paint.style = Paint.Style.FILL
+                path.reset()
+                path.moveTo(cx, y0 + h * 0.08f)
+                path.lineTo(x0 + w * 0.95f, y0 + h * 0.48f)
+                path.lineTo(x0 + w * 0.84f, y0 + h * 0.48f)
+                path.lineTo(x0 + w * 0.84f, y0 + h * 0.90f)
+                path.lineTo(x0 + w * 0.16f, y0 + h * 0.90f)
+                path.lineTo(x0 + w * 0.16f, y0 + h * 0.48f)
+                path.lineTo(x0 + w * 0.05f, y0 + h * 0.48f)
+                path.close()
+                c.drawPath(path, paint)
+            }
+        }
+    }
+
+    override fun setAlpha(alpha: Int) {
+        invalidateSelf()
+    }
+
+    override fun setColorFilter(colorFilter: ColorFilter?) {
+        paint.colorFilter = colorFilter
+        invalidateSelf()
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+}
+
+/**
+ * Vertical scroller for the home screen. We scroll it ourselves (row by row), so the stock
+ * "scroll just enough to show the focused child" and arrow-key scrolling are switched off.
+ */
+class HomeScroll(context: Context) : ScrollView(context) {
+    override fun computeScrollDeltaToGetChildRectOnScreen(rect: Rect): Int = 0
+    override fun executeKeyEvent(event: KeyEvent): Boolean = false
+}
+
 class MainActivity : Activity() {
 
     data class AppItem(
@@ -331,8 +448,30 @@ class MainActivity : Activity() {
         val title: String?,
         val desc: String?,
         val images: List<String>,          // candidates, tried in order
-        val intentUri: String?
+        val intentUri: String?,
+        val progress: Float = 0f,          // 0..1 watched (Watch Next only)
+        val engaged: Long = -1L            // last engagement time, for sorting "recent"
     )
+
+    class TvData(
+        val hero: Map<String, List<HeroItem>>,
+        val recent: List<HeroItem>,
+        val recommended: List<HeroItem>
+    )
+
+    /** One entry of the Apple-TV-style Settings menu. */
+    class SItem(
+        val title: String,
+        val glyph: Int = -1,
+        val color: Int = 0,
+        val value: String? = null,
+        val sub: List<SItem>? = null,
+        val action: (() -> Unit)? = null
+    )
+
+    class Page(val title: String, val items: List<SItem>, var focus: Int = 0)
+    class RowViews(val row: LinearLayout, val title: TextView, val value: TextView?)
+    class WNet(val ssid: String, val caps: String, val level: Int, val connected: Boolean, val netId: Int)
 
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -340,10 +479,17 @@ class MainActivity : Activity() {
     private val UA = "Mozilla/5.0 (Linux; Android 9; MiBox4) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Safari/537.36"
     private val TV_PERM = "android.permission.READ_TV_LISTINGS"
+    private val LOC_PERM = "android.permission.ACCESS_FINE_LOCATION"
     private val SETTINGS_PKG = "__settings"
     private val PREFS = "ananta_dock"
     private val KEY_DOCK = "force_dock"
     private val KEY_GRID = "force_grid"
+
+    // Home rows, top to bottom
+    private val R_DOCK = 0
+    private val R_RECENT = 1
+    private val R_APPS = 2
+    private val R_REC = 3
 
     /** Display order inside the dock (first match wins). */
     private val priorityKeys = listOf(
@@ -378,7 +524,11 @@ class MainActivity : Activity() {
     private var edgePad = 0
     private var slotW = 0
     private var slotH = 0
-    private var gridSpan = 1
+    private var cardW = 0
+    private var cardH = 0
+    private var slotCardW = 0
+    private var panelWpx = 0
+    private var dockTopPx = 0
     private var radius = 0f
 
     private val defaultTint = Color.parseColor("#2b3a67")
@@ -389,6 +539,15 @@ class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private var forceDock = HashSet<String>()
     private var forceGrid = HashSet<String>()
+
+    private lateinit var rootLayer: FrameLayout
+    private lateinit var homeGroup: FrameLayout
+    private lateinit var scroll: HomeScroll
+    private lateinit var content: LinearLayout
+    private lateinit var heroLayer: FrameLayout
+    private lateinit var heroTextLayer: FrameLayout
+    private lateinit var leftScrim: View
+    private lateinit var dimOverlay: View
 
     private lateinit var aurora: AuroraView
     private lateinit var heroA: ImageView
@@ -405,6 +564,8 @@ class MainActivity : Activity() {
     private lateinit var heroBtn: TextView
     private lateinit var wifiDrawable: WifiDrawable
     private lateinit var avatarDrawable: AvatarDrawable
+    private lateinit var wifiBtnView: View
+    private lateinit var gearBtnView: View
     private val ACCT_PERM = "android.permission.GET_ACCOUNTS"
     private val statusTick = object : Runnable {
         override fun run() {
@@ -413,16 +574,24 @@ class MainActivity : Activity() {
         }
     }
     private lateinit var dots: LinearLayout
-    private lateinit var list: RecyclerView      // the dock (OTT apps)
-    private lateinit var grid: RecyclerView      // everything else
+
+    private val rowRv = arrayOfNulls<RecyclerView>(4)
+    private val rowSection = arrayOfNulls<View>(4)
+    private val rowEmpty = arrayOfNulls<TextView>(4)
+    private val lastPos = IntArray(4)
+    private lateinit var dockRv: RecyclerView
+    private lateinit var appsRv: RecyclerView
     private lateinit var dockAdapter: TileAdapter
-    private lateinit var gridAdapter: TileAdapter
+    private lateinit var appsAdapter: TileAdapter
+    private lateinit var recentAdapter: FeedAdapter
+    private lateinit var recAdapter: FeedAdapter
 
     private var allApps: List<AppItem> = emptyList()
+    private val appByPkg = HashMap<String, AppItem>()
     private val dockApps = ArrayList<AppItem>()
     private val gridApps = ArrayList<AppItem>()
-    private var lastDockPos = 0
-    private var lastGridPos = 0
+    private val recentItems = ArrayList<HeroItem>()
+    private val recItems = ArrayList<HeroItem>()
 
     private var heroMap: Map<String, List<HeroItem>> = emptyMap()
     private var focusedApp: AppItem? = null
@@ -432,6 +601,27 @@ class MainActivity : Activity() {
     private var heroToken = 0
     private val handler = Handler(Looper.getMainLooper())
     private val rotator = Runnable { rotateHero() }
+
+    // Wi-Fi dropdown
+    private lateinit var wifiPanel: FrameLayout
+    private lateinit var wifiScroll: ScrollView
+    private lateinit var wifiList: LinearLayout
+    private var wifiOpen = false
+    private var wifiRecvRegistered = false
+    private val wifiReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            populateWifi()
+        }
+    }
+
+    // Settings screen
+    private lateinit var settingsLayer: FrameLayout
+    private lateinit var settingsTitle: TextView
+    private lateinit var settingsCrumb: TextView
+    private lateinit var settingsScroll: ScrollView
+    private lateinit var settingsList: LinearLayout
+    private val settingsStack = ArrayList<Page>()
+    private var settingsOpen = false
 
     private val io = Executors.newFixedThreadPool(3)
     private val failed = HashSet<String>()
@@ -455,34 +645,44 @@ class MainActivity : Activity() {
         screenH = dm.heightPixels
         outer = (screenW * 0.035f).toInt()
         gap = (screenW * 0.0115f).toInt()
-        tileW = (screenW * 0.088f).toInt()          // smaller dock tiles
+        tileW = (screenW * 0.088f).toInt()
         tileH = (tileW * 0.6f).toInt()
         radius = screenW * 0.0095f
 
-        // Dock geometry
-        val labelH = (screenW * 0.0115f * 1.6f + screenW * 0.006f).toInt()
-        val padV = (tileH * 0.24f).toInt()
-        val panelH = tileH + labelH + 2 * padV
+        // Dock geometry: no label inside the dock, so the icons sit exactly in the middle of the glass.
+        val padV = (tileH * 0.30f).toInt()
+        val panelH = tileH + 2 * padV
         val panelW = screenW - 2 * outer
+        panelWpx = panelW
         val panelR = panelH * 0.3f
         edgePad = (panelR * 0.9f).toInt()
         slotW = tileW + 2 * gap
+        val labelH = (screenW * 0.0115f * 1.6f + screenW * 0.006f).toInt()
         slotH = tileH + labelH + (gap * 1.2f).toInt()
         val tileStartX = outer + edgePad + gap
-        val dockTop = (screenH * 0.43f).toInt()
+        val dockTop = (screenH * 0.56f).toInt()      // dock sits low, hero artwork gets more room
+        dockTopPx = dockTop
 
-        // Apps section geometry (below the dock)
-        val headerTop = dockTop + panelH + (screenH * 0.02f).toInt()
-        val headerH = (screenW * 0.0115f * 2.2f).toInt()
-        val gridTop = headerTop + headerH
-        val gridH = screenH - gridTop
-        gridSpan = ((panelW - 2 * edgePad) / slotW).coerceAtLeast(3)
+        // Feed cards (Recently watched / Recommended)
+        cardW = (screenW * 0.165f).toInt()
+        cardH = (cardW * 9f / 16f).toInt()
+        slotCardW = cardW + 2 * gap
+        val cardTextH = (screenW * 0.0115f * 1.5f + screenW * 0.0095f * 1.5f + screenW * 0.01f).toInt()
+        val feedRvH = cardH + cardTextH + gap * 2
+        val appsRvH = slotH + gap
 
         allApps = loadApps()
+        for (a in allApps) appByPkg[a.pkg] = a
         rebuildLists()
 
-        val root = FrameLayout(this)
-        root.setBackgroundColor(Color.BLACK)
+        rootLayer = FrameLayout(this)
+        rootLayer.setBackgroundColor(Color.BLACK)
+        rootLayer.clipChildren = false
+        homeGroup = FrameLayout(this)
+        homeGroup.clipChildren = false
+        homeGroup.clipToPadding = false
+        rootLayer.addView(homeGroup, FrameLayout.LayoutParams(MATCH, MATCH))
+        val root = homeGroup
 
         // ---- 1. animated aurora background
         aurora = AuroraView(this)
@@ -498,18 +698,18 @@ class MainActivity : Activity() {
             root.addView(wall, FrameLayout.LayoutParams(MATCH, MATCH))
         }
 
-        // ---- 3. hero artwork from OTT apps (two layers so images cross-fade)
+        // ---- 3. hero layer: artwork from OTT apps (two layers so images cross-fade) + brand card
+        heroLayer = FrameLayout(this)
         heroA = ImageView(this)
         heroA.scaleType = ImageView.ScaleType.CENTER_CROP
         heroA.alpha = 0f
-        root.addView(heroA, FrameLayout.LayoutParams(MATCH, MATCH))
+        heroLayer.addView(heroA, FrameLayout.LayoutParams(MATCH, MATCH))
         heroB = ImageView(this)
         heroB.scaleType = ImageView.ScaleType.CENTER_CROP
         heroB.alpha = 0f
-        root.addView(heroB, FrameLayout.LayoutParams(MATCH, MATCH))
+        heroLayer.addView(heroB, FrameLayout.LayoutParams(MATCH, MATCH))
         heroFront = heroA
 
-        // ---- 3b. brand card: shown when an app has no artwork to display
         brandBg = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(defaultTint, defaultTint))
         brandBg.cornerRadius = radius * 2.4f
         brandBg.setStroke(2, Color.argb(70, 255, 255, 255))
@@ -530,38 +730,37 @@ class MainActivity : Activity() {
         val bh = (bw * 0.6f).toInt()
         val brandLp = FrameLayout.LayoutParams(bw, bh, Gravity.TOP or Gravity.END)
         brandLp.setMargins(0, (screenH * 0.17f).toInt(), tileStartX, 0)
-        root.addView(brandCard, brandLp)
+        heroLayer.addView(brandCard, brandLp)
+        root.addView(heroLayer, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // ---- 4. scrims for readability
-        val leftScrim = View(this)
+        leftScrim = View(this)
         leftScrim.background = GradientDrawable(
             GradientDrawable.Orientation.LEFT_RIGHT,
             intArrayOf(Color.argb(185, 0, 0, 0), Color.TRANSPARENT)
         )
-        root.addView(
-            leftScrim,
-            FrameLayout.LayoutParams((screenW * 0.58f).toInt(), MATCH, Gravity.START)
-        )
+        root.addView(leftScrim, FrameLayout.LayoutParams((screenW * 0.58f).toInt(), MATCH, Gravity.START))
         val topScrim = View(this)
         topScrim.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Color.argb(140, 0, 0, 0), Color.TRANSPARENT)
         )
-        root.addView(
-            topScrim,
-            FrameLayout.LayoutParams(MATCH, (screenH * 0.22f).toInt(), Gravity.TOP)
-        )
+        root.addView(topScrim, FrameLayout.LayoutParams(MATCH, (screenH * 0.22f).toInt(), Gravity.TOP))
         val bottomScrim = View(this)
         bottomScrim.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Color.TRANSPARENT, Color.argb(130, 0, 0, 0), Color.argb(238, 0, 0, 0))
         )
-        root.addView(
-            bottomScrim,
-            FrameLayout.LayoutParams(MATCH, (screenH * 0.66f).toInt(), Gravity.BOTTOM)
-        )
+        root.addView(bottomScrim, FrameLayout.LayoutParams(MATCH, (screenH * 0.66f).toInt(), Gravity.BOTTOM))
+        // grows darker while the page scrolls down, so the lower rows stay readable
+        dimOverlay = View(this)
+        dimOverlay.setBackgroundColor(Color.BLACK)
+        dimOverlay.alpha = 0f
+        root.addView(dimOverlay, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // ---- 5. brand mark + hero text block
+        heroTextLayer = FrameLayout(this)
+        heroTextLayer.clipChildren = false
         val brand = TextView(this)
         brand.text = "ANANTA  TV"
         brand.setTextColor(Color.argb(210, 255, 255, 255))
@@ -570,7 +769,7 @@ class MainActivity : Activity() {
         brand.letterSpacing = 0.35f
         val brandMarkLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
         brandMarkLp.setMargins(tileStartX, (screenH * 0.055f).toInt(), 0, 0)
-        root.addView(brand, brandMarkLp)
+        heroTextLayer.addView(brand, brandMarkLp)
 
         metaView = TextView(this)
         metaView.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
@@ -630,7 +829,6 @@ class MainActivity : Activity() {
 
         val info = LinearLayout(this)
         info.orientation = LinearLayout.VERTICAL
-        // Do not clip children: the focused button scales up and its edges used to be cut off.
         info.clipChildren = false
         info.clipToPadding = false
         val infoPad = (screenW * 0.012f).toInt()
@@ -647,15 +845,25 @@ class MainActivity : Activity() {
         info.addView(heroBtn, btnLp)
         val infoLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
         infoLp.setMargins(tileStartX - infoPad, (screenH * 0.105f).toInt() - infoPad, 0, 0)
-        root.addView(info, infoLp)
+        heroTextLayer.addView(info, infoLp)
+        root.addView(heroTextLayer, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // ---- 6. carousel dots (just above the dock)
+        // ---- 6. the scrolling page: [spacer + dots] [dock] [recently watched] [all apps] [recommended]
+        content = LinearLayout(this)
+        content.orientation = LinearLayout.VERTICAL
+        content.clipChildren = false
+        content.clipToPadding = false
+        content.setPadding(0, 0, 0, (screenH * 0.06f).toInt())
+
+        val spacer = FrameLayout(this)
+        spacer.clipChildren = false
         dots = LinearLayout(this)
         dots.orientation = LinearLayout.HORIZONTAL
         dots.gravity = Gravity.CENTER
-        val dotsLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-        dotsLp.topMargin = dockTop - (screenW * 0.0055f).toInt().coerceAtLeast(6) - (screenH * 0.022f).toInt()
-        root.addView(dots, dotsLp)
+        val dotsLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        dotsLp.bottomMargin = (screenH * 0.022f).toInt()
+        spacer.addView(dots, dotsLp)
+        content.addView(spacer, LinearLayout.LayoutParams(MATCH, dockTop))
 
         // ---- 7. glass dock panel (the list lives INSIDE it, so tiles slide within the glass)
         val glass = FrameLayout(this)
@@ -688,27 +896,18 @@ class MainActivity : Activity() {
         )
         glass.addView(sheen, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // ---- 8. the dock row: OTT apps only, scrolls sideways INSIDE the glass
-        val lm = object : LinearLayoutManager(this, RecyclerView.HORIZONTAL, false) {
-            // We centre the focused tile ourselves, so skip the default "just make it visible" scroll.
-            override fun requestChildRectangleOnScreen(
-                parent: RecyclerView,
-                child: View,
-                rect: Rect,
-                immediate: Boolean,
-                focusedChildVisible: Boolean
-            ): Boolean = false
-        }
-        list = RecyclerView(this)
-        list.layoutManager = lm
-        list.clipChildren = false
-        list.clipToPadding = false
-        list.setPadding(edgePad, 0, edgePad, 0)
-        list.setItemViewCacheSize(8)
-        list.itemAnimator = null
-        dockAdapter = TileAdapter(dockApps, true)
-        list.adapter = dockAdapter
-        glass.addView(list, FrameLayout.LayoutParams(MATCH, MATCH))
+        dockRv = RecyclerView(this)
+        dockRv.layoutManager = centeringLayoutManager()
+        dockRv.clipChildren = false
+        dockRv.clipToPadding = false
+        dockRv.setPadding(edgePad, 0, edgePad, 0)
+        dockRv.setItemViewCacheSize(8)
+        dockRv.itemAnimator = null
+        dockAdapter = TileAdapter(dockApps, R_DOCK)
+        dockRv.adapter = dockAdapter
+        rowRv[R_DOCK] = dockRv
+        glass.addView(dockRv, FrameLayout.LayoutParams(MATCH, MATCH))
+        layoutDockPadding()
 
         // soft fade at both ends so tiles dissolve into the dock edge instead of hard-cutting
         val fadeW = (edgePad + gap * 0.5f).toInt()
@@ -745,52 +944,60 @@ class MainActivity : Activity() {
         hlLp.topMargin = 1
         glass.addView(highlight, hlLp)
 
-        val glassLp = FrameLayout.LayoutParams(panelW, panelH, Gravity.TOP or Gravity.START)
-        glassLp.setMargins(outer, dockTop, 0, 0)
-        root.addView(glass, glassLp)
+        val glassLp = LinearLayout.LayoutParams(panelW, panelH)
+        glassLp.leftMargin = outer
+        content.addView(glass, glassLp)
+        rowSection[R_DOCK] = glass
 
-        // ---- 8b. "All apps" section below the dock: every non-OTT app, Apple TV style
-        val appsHeader = TextView(this)
-        appsHeader.text = "ALL APPS"
-        appsHeader.setTextColor(Color.argb(190, 255, 255, 255))
-        appsHeader.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
-        appsHeader.setTypeface(Typeface.DEFAULT_BOLD)
-        appsHeader.letterSpacing = 0.3f
-        val headerLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
-        headerLp.setMargins(tileStartX, headerTop, 0, 0)
-        root.addView(appsHeader, headerLp)
+        // ---- 8. rows below the dock
+        recentAdapter = FeedAdapter(recentItems, R_RECENT)
+        recAdapter = FeedAdapter(recItems, R_REC)
+        appsAdapter = TileAdapter(gridApps, R_APPS)
 
-        val hint = TextView(this)
-        hint.text = "Hold OK on any app to move it between the dock and Apps"
-        hint.setTextColor(Color.argb(95, 255, 255, 255))
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.009f)
-        val hintLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        hintLp.setMargins(0, headerTop, tileStartX, 0)
-        root.addView(hint, hintLp)
+        content.addView(
+            makeSection(
+                R_RECENT, "RECENTLY WATCHED", null, feedRvH, recentAdapter, tileStartX,
+                "Nothing here yet. Videos you start in your apps will appear here."
+            ),
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.035f).toInt() }
+        )
+        content.addView(
+            makeSection(
+                R_APPS, "ALL APPS", "Hold OK on any app to move it between the dock and All Apps",
+                appsRvH, appsAdapter, tileStartX, ""
+            ),
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
+        )
+        appsRv = rowRv[R_APPS]!!
+        content.addView(
+            makeSection(
+                R_REC, "RECOMMENDED", null, feedRvH, recAdapter, tileStartX,
+                "Recommendations from your apps will appear here."
+            ),
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
+        )
+        updateEmpty(R_RECENT)
+        updateEmpty(R_REC)
 
-        grid = RecyclerView(this)
-        grid.layoutManager = GridLayoutManager(this, gridSpan)
-        grid.clipChildren = false
-        grid.clipToPadding = false
-        // Content width is exactly gridSpan * slotW so every column lines up with the dock tiles above.
-        val gridLeft = outer + edgePad
-        grid.setPadding(gridLeft, 0, (screenW - gridLeft - gridSpan * slotW).coerceAtLeast(0), (screenH * 0.05f).toInt())
-        grid.setItemViewCacheSize(gridSpan * 2)
-        grid.itemAnimator = null
-        grid.overScrollMode = View.OVER_SCROLL_NEVER
-        gridAdapter = TileAdapter(gridApps, false)
-        grid.adapter = gridAdapter
-        val gridLp = FrameLayout.LayoutParams(MATCH, gridH, Gravity.TOP or Gravity.START)
-        gridLp.setMargins(0, gridTop, 0, 0)
-        root.addView(grid, gridLp)
+        scroll = HomeScroll(this)
+        scroll.isFocusable = false
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.overScrollMode = View.OVER_SCROLL_NEVER
+        scroll.clipChildren = false
+        scroll.clipToPadding = false
+        scroll.addView(content, FrameLayout.LayoutParams(MATCH, WRAP))
+        root.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
+        scroll.viewTreeObserver.addOnScrollChangedListener { applyScrollFx(scroll.scrollY) }
 
-        // ---- 9. top bar (Apple TV style): wifi, time, settings, profile
+        // ---- 9. top bar (Apple TV style): wifi, time, settings, profile.
+        // Every ancestor has clipChildren=false, so the focused circle is never cropped any more.
         val iconS = (screenW * 0.0185f).toInt()
         val iconPad = (iconS * 0.42f).toInt()
         val iconBox = iconS + 2 * iconPad
 
         wifiDrawable = WifiDrawable(Color.WHITE)
-        val wifiBtn = topIcon(wifiDrawable, iconBox, iconPad, true) { openSystem(Settings.ACTION_WIFI_SETTINGS) }
+        val wifiBtn = topIcon(wifiDrawable, iconBox, iconPad, true) { toggleWifiPanel() }
+        wifiBtnView = wifiBtn
 
         val clock = TextClock(this)
         clock.format12Hour = "h:mm"
@@ -798,9 +1005,10 @@ class MainActivity : Activity() {
         clock.setTextColor(Color.WHITE)
         clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0135f)
         clock.setTypeface(Typeface.DEFAULT_BOLD)
-        clock.setPadding((screenW * 0.006f).toInt(), 0, (screenW * 0.006f).toInt(), 0)
+        clock.setPadding((screenW * 0.007f).toInt(), 0, (screenW * 0.007f).toInt(), 0)
 
-        val gearBtn = topIcon(GearDrawable(Color.WHITE), iconBox, iconPad, true) { openSystem(Settings.ACTION_SETTINGS) }
+        val gearBtn = topIcon(GearDrawable(Color.WHITE), iconBox, iconPad, true) { openSettings() }
+        gearBtnView = gearBtn
 
         avatarDrawable = AvatarDrawable()
         val avatarBtn = topIcon(avatarDrawable, iconBox, (iconPad * 0.55f).toInt(), false) {
@@ -811,35 +1019,37 @@ class MainActivity : Activity() {
         topBar.orientation = LinearLayout.HORIZONTAL
         topBar.gravity = Gravity.CENTER_VERTICAL
         topBar.clipChildren = false
-        val bp = (screenW * 0.004f).toInt()
+        topBar.clipToPadding = false
+        val bp = (screenW * 0.006f).toInt()
         topBar.setPadding(bp * 2, bp, bp * 2, bp)
         topBar.background = glassPill()
         topBar.addView(wifiBtn, LinearLayout.LayoutParams(iconBox, iconBox))
         topBar.addView(clock, LinearLayout.LayoutParams(WRAP, WRAP))
         topBar.addView(gearBtn, LinearLayout.LayoutParams(iconBox, iconBox))
         topBar.addView(avatarBtn, LinearLayout.LayoutParams(iconBox, iconBox))
+        val topMarginPx = (screenH * 0.04f).toInt()
         val topLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        topLp.setMargins(0, (screenH * 0.04f).toInt(), tileStartX, 0)
+        topLp.setMargins(0, topMarginPx, tileStartX, 0)
         root.addView(topBar, topLp)
 
-        setContentView(root)
+        // ---- 10. overlays: Wi-Fi dropdown + Apple-TV-style Settings
+        wifiPanel = buildWifiPanel(topMarginPx + iconBox + 2 * bp + (screenH * 0.012f).toInt(), tileStartX)
+        rootLayer.addView(wifiPanel)
+        settingsLayer = buildSettingsLayer()
+        rootLayer.addView(settingsLayer, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // entrance animation: dock and apps glide up and fade in
-        val enter = DecelerateInterpolator(2f)
-        val entering = listOf<Pair<View, Long>>(
-            Pair(glass, 0L), Pair(appsHeader, 140L), Pair(hint, 140L), Pair(grid, 200L)
-        )
-        for ((v, delay) in entering) {
-            v.alpha = 0f
-            v.translationY = screenH * 0.04f
-            v.animate().alpha(1f).translationY(0f).setStartDelay(delay).setDuration(650)
-                .setInterpolator(enter).start()
-        }
+        setContentView(rootLayer)
 
-        root.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+        // entrance animation: the whole page glides up and fades in
+        content.alpha = 0f
+        content.translationY = screenH * 0.04f
+        content.animate().alpha(1f).translationY(0f).setDuration(650)
+            .setInterpolator(DecelerateInterpolator(2f)).start()
+
+        rootLayer.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
-                root.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                val first = list.getChildAt(0) ?: grid.getChildAt(0)
+                rootLayer.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                val first = dockRv.getChildAt(0) ?: appsRv.getChildAt(0)
                 first?.requestFocus()
             }
         })
@@ -851,6 +1061,10 @@ class MainActivity : Activity() {
         Build.VERSION.SDK_INT < 23 ||
             checkSelfPermission(ACCT_PERM) == PackageManager.PERMISSION_GRANTED
 
+    private fun hasLocationPermission(): Boolean =
+        Build.VERSION.SDK_INT < 23 ||
+            checkSelfPermission(LOC_PERM) == PackageManager.PERMISSION_GRANTED
+
     private fun requestMissingPermissions() {
         if (Build.VERSION.SDK_INT < 23) return
         val need = ArrayList<String>()
@@ -861,6 +1075,14 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 78) {
+            // location granted (or refused): refresh the Wi-Fi list either way
+            if (wifiOpen) {
+                startWifiScan()
+                populateWifi()
+            }
+            return
+        }
         refreshAccount()
         if (hasTvPermission()) loadHeroAsync()
     }
@@ -879,7 +1101,7 @@ class MainActivity : Activity() {
         v.isClickable = true
         if (Build.VERSION.SDK_INT >= 26) v.defaultFocusHighlightEnabled = false
         v.setOnFocusChangeListener { view, focused ->
-            val s = if (focused) 1.14f else 1f
+            val s = if (focused) 1.08f else 1f
             view.animate().scaleX(s).scaleY(s).setDuration(150).start()
             bg.setColor(if (focused) Color.argb(240, 255, 255, 255) else Color.TRANSPARENT)
             if (whiteIcon) v.setColorFilter(if (focused) Color.BLACK else Color.WHITE)
@@ -930,16 +1152,19 @@ class MainActivity : Activity() {
         wifiDrawable.update(level, connected)
     }
 
+    private fun googleAccount(): String? {
+        return try {
+            if (hasAccountsPermission()) {
+                AccountManager.get(this).getAccountsByType("com.google").firstOrNull()?.name
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** Shows the signed-in Google account (initial on a colour) in the top bar. */
     private fun refreshAccount() {
-        var name: String? = null
-        try {
-            if (hasAccountsPermission()) {
-                name = AccountManager.get(this).getAccountsByType("com.google").firstOrNull()?.name
-            }
-        } catch (e: Exception) {
-            name = null
-        }
+        val name = googleAccount()
         if (name == null) {
             avatarDrawable.set(null, Color.parseColor("#4a4f5e"))
         } else {
@@ -964,21 +1189,27 @@ class MainActivity : Activity() {
     override fun onPause() {
         handler.removeCallbacks(rotator)
         handler.removeCallbacks(statusTick)
+        unregisterWifiReceiver()
         super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Home pressed while already here: jump back to the first dock app.
-        lastDockPos = 0
-        lastGridPos = 0
-        list.scrollToPosition(0)
-        grid.scrollToPosition(0)
+        // Home pressed while already here: close any panel and jump back to the first dock app.
+        if (wifiOpen) closeWifiPanel(false)
+        if (settingsOpen) closeSettings(false)
+        lastPos.fill(0)
+        dockRv.scrollToPosition(0)
+        appsRv.scrollToPosition(0)
+        scroll.scrollTo(0, 0)
         focusDock()
     }
 
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
     override fun onBackPressed() {
-        // Launcher is the root screen: ignore Back.
+        // Launcher is the root screen: Back only closes the Wi-Fi dropdown / Settings.
+        if (settingsOpen) settingsBack()
+        else if (wifiOpen) closeWifiPanel(true)
     }
 
     private fun glassPill(): GradientDrawable {
@@ -989,19 +1220,44 @@ class MainActivity : Activity() {
         return g
     }
 
+    /** Hero text / artwork fade away as the page scrolls down to the lower rows. */
+    private fun applyScrollFx(y: Int) {
+        val p = (y / (screenH * 0.38f)).coerceIn(0f, 1f)
+        heroLayer.alpha = 1f - 0.55f * p
+        heroTextLayer.alpha = 1f - p
+        leftScrim.alpha = 1f - p
+        dimOverlay.alpha = 0.6f * p
+    }
+
     // =====================================================================
-    // Hero data (TV provider)
+    // TV provider data: hero artwork, Recently watched, Recommended
     // =====================================================================
 
     private fun hasTvPermission(): Boolean =
         Build.VERSION.SDK_INT < 23 ||
             checkSelfPermission(TV_PERM) == PackageManager.PERMISSION_GRANTED
 
+    private fun feedKey(l: List<HeroItem>): List<String> =
+        l.map { it.pkg + "|" + (it.title ?: "") + "|" + (it.images.firstOrNull() ?: "") + "|" + (it.progress * 100).toInt() }
+
     private fun loadHeroAsync() {
         io.execute {
-            val map = queryHero()
+            val data = queryTv()
             runOnUiThread {
-                heroMap = map
+                heroMap = data.hero
+                // Only touch the rows when something changed, otherwise the focused card would lose focus.
+                if (feedKey(recentItems) != feedKey(data.recent)) {
+                    recentItems.clear()
+                    recentItems.addAll(data.recent)
+                    recentAdapter.notifyDataSetChanged()
+                    updateEmpty(R_RECENT)
+                }
+                if (feedKey(recItems) != feedKey(data.recommended)) {
+                    recItems.clear()
+                    recItems.addAll(data.recommended)
+                    recAdapter.notifyDataSetChanged()
+                    updateEmpty(R_REC)
+                }
                 focusedApp?.let { showHeroFor(it) }
             }
         }
@@ -1017,20 +1273,27 @@ class MainActivity : Activity() {
         return if (i >= 0 && !isNull(i)) getInt(i) else -1
     }
 
-    private fun queryHero(): Map<String, List<HeroItem>> {
-        val out = LinkedHashMap<String, MutableList<HeroItem>>()
-        if (Build.VERSION.SDK_INT < 26) return out
-        val uris = arrayOf(
-            "content://android.media.tv/preview_program",
-            "content://android.media.tv/watch_next_program"
+    private fun Cursor.lng(name: String): Long {
+        val i = getColumnIndex(name)
+        return if (i >= 0 && !isNull(i)) getLong(i) else -1L
+    }
+
+    private fun queryTv(): TvData {
+        val hero = LinkedHashMap<String, MutableList<HeroItem>>()
+        val recent = ArrayList<HeroItem>()
+        val previewByPkg = LinkedHashMap<String, MutableList<HeroItem>>()
+        if (Build.VERSION.SDK_INT < 26) return TvData(hero, recent, emptyList())
+
+        val sources = listOf(
+            Pair("content://android.media.tv/preview_program", false),
+            Pair("content://android.media.tv/watch_next_program", true)
         )
-        for (u in uris) {
+        for ((u, isWatchNext) in sources) {
             try {
                 val c = contentResolver.query(Uri.parse(u), null, null, null, null) ?: continue
                 c.use { cur ->
                     var rows = 0
-                    // High cap on purpose: big apps (YouTube, Netflix) publish hundreds of rows and used to
-                    // use up the old 400-row limit before smaller apps (Chorki, Toffee...) were ever reached.
+                    // High cap on purpose: big apps (YouTube, Netflix) publish hundreds of rows.
                     while (cur.moveToNext() && rows < 8000) {
                         rows++
                         val pkg = cur.str("package_name") ?: continue
@@ -1044,17 +1307,27 @@ class MainActivity : Activity() {
                             .filter { it.isNotBlank() }
                             .distinct()
                         if (images.isEmpty()) continue
-                        val items = out.getOrPut(pkg) { mutableListOf() }
-                        if (items.size < 8 && items.none { it.images[0] == images[0] }) {
-                            items.add(
-                                HeroItem(
-                                    pkg,
-                                    cur.str("title"),
-                                    cur.str("short_description"),
-                                    images,
-                                    cur.str("intent_uri")
-                                )
-                            )
+                        val dur = cur.lng("duration_millis")
+                        val pos = cur.lng("last_playback_position_millis")
+                        val progress = if (dur > 0 && pos > 0) (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f) else 0f
+                        val item = HeroItem(
+                            pkg,
+                            cur.str("title"),
+                            cur.str("short_description"),
+                            images,
+                            cur.str("intent_uri"),
+                            progress,
+                            cur.lng("last_engagement_time_utc_millis")
+                        )
+                        // hero artwork (per app)
+                        val items = hero.getOrPut(pkg) { mutableListOf() }
+                        if (items.size < 8 && items.none { it.images[0] == images[0] }) items.add(item)
+                        // feeds
+                        if (isWatchNext) {
+                            if (recent.none { it.pkg == pkg && it.images[0] == images[0] }) recent.add(item)
+                        } else {
+                            val l = previewByPkg.getOrPut(pkg) { mutableListOf() }
+                            if (l.size < 6 && l.none { it.images[0] == images[0] }) l.add(item)
                         }
                     }
                 }
@@ -1062,8 +1335,28 @@ class MainActivity : Activity() {
                 Log.w(TAG, "TV provider query failed for $u", e)
             }
         }
-        Log.i(TAG, "hero artwork per app: " + out.mapValues { it.value.size })
-        return out
+        recent.sortByDescending { it.engaged }
+        val recentOut = ArrayList<HeroItem>(recent.take(20))
+
+        // Recommended: interleave the apps so one app doesn't fill the whole row
+        val seenRecent = HashSet<String>()
+        for (r in recentOut) seenRecent.add(r.pkg + "|" + (r.images.firstOrNull() ?: ""))
+        val rec = ArrayList<HeroItem>()
+        var round = 0
+        var added = true
+        while (added && rec.size < 40) {
+            added = false
+            for ((_, l) in previewByPkg) {
+                if (round < l.size && rec.size < 40) {
+                    val it2 = l[round]
+                    if (!seenRecent.contains(it2.pkg + "|" + it2.images[0])) rec.add(it2)
+                    added = true
+                }
+            }
+            round++
+        }
+        Log.i(TAG, "hero per app: " + hero.mapValues { it.value.size } + " recent=" + recentOut.size + " rec=" + rec.size)
+        return TvData(hero, recentOut, rec)
     }
 
     private fun launchHero(item: HeroItem?) {
@@ -1104,8 +1397,6 @@ class MainActivity : Activity() {
             }
             return
         }
-        // Switching to another app: drop the previous app's artwork straight away so it never
-        // sits next to the wrong title while the new image is still downloading.
         if (heroShownPkg != app.pkg) clearHeroImage()
         showItem(app, items[0], 0, items.size)
         if (items.size > 1) handler.postDelayed(rotator, 7000)
@@ -1181,7 +1472,7 @@ class MainActivity : Activity() {
             done(null)
             return
         }
-        loadBitmap(uris[idx]) { bmp ->
+        loadBitmap(uris[idx], screenW) { bmp ->
             if (token != heroToken) return@loadBitmap
             if (bmp != null) done(bmp) else loadFirst(uris, idx + 1, token, done)
         }
@@ -1251,8 +1542,9 @@ class MainActivity : Activity() {
     // Image loading
     // =====================================================================
 
-    private fun loadBitmap(uriStr: String, cb: (Bitmap?) -> Unit) {
-        val cached = cache.get(uriStr)
+    private fun loadBitmap(uriStr: String, targetW: Int, cb: (Bitmap?) -> Unit) {
+        val key = "$uriStr#$targetW"
+        val cached = cache.get(key)
         if (cached != null) {
             cb(cached)
             return
@@ -1263,25 +1555,19 @@ class MainActivity : Activity() {
         }
         io.execute {
             val bmp = try {
-                decode(uriStr)
+                decode(uriStr, targetW)
             } catch (e: Throwable) {
                 Log.w(TAG, "image load failed: $uriStr", e)
                 null
             }
             runOnUiThread {
-                if (bmp != null) cache.put(uriStr, bmp) else failed.add(uriStr)
+                if (bmp != null) cache.put(key, bmp) else failed.add(uriStr)
                 cb(bmp)
             }
         }
     }
 
-    /**
-     * Downloads (or opens) the raw image bytes. Compared with the old version this:
-     *  - sends a browser User-Agent (some CDNs answer 403 to the default Java agent),
-     *  - asks for jpeg/png/webp only (a CDN may otherwise reply with AVIF, which Android 9 cannot decode),
-     *  - follows redirects itself, including http -> https which HttpURLConnection refuses to do,
-     *  - accepts "//host/path" and unescaped spaces.
-     */
+    /** Downloads (or opens) the raw image bytes: browser UA, manual redirects incl. http->https, jpeg/png/webp only. */
     private fun fetchBytes(uriStr: String): ByteArray? {
         var target = uriStr.trim().replace(" ", "%20")
         if (target.startsWith("//")) target = "https:$target"
@@ -1318,7 +1604,7 @@ class MainActivity : Activity() {
         return contentResolver.openInputStream(parsed)?.use { it.readBytes() }
     }
 
-    private fun decode(uriStr: String): Bitmap? {
+    private fun decode(uriStr: String, targetW: Int): Bitmap? {
         val bytes = fetchBytes(uriStr) ?: return null
         val bounds = BitmapFactory.Options()
         bounds.inJustDecodeBounds = true
@@ -1328,10 +1614,29 @@ class MainActivity : Activity() {
             return null
         }
         var sample = 1
-        while (bounds.outWidth / (sample * 2) >= screenW) sample *= 2
+        while (bounds.outWidth / (sample * 2) >= targetW) sample *= 2
         val opts = BitmapFactory.Options()
         opts.inSampleSize = sample
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    }
+
+    /** Loads the first decodable candidate into [iv]; ignores late results for recycled views. */
+    private fun loadInto(iv: ImageView, uris: List<String>, targetW: Int, onLoaded: () -> Unit) {
+        val key = uris.firstOrNull() ?: return
+        iv.tag = key
+        fun step(i: Int) {
+            if (i >= uris.size) return
+            loadBitmap(uris[i], targetW) { bmp ->
+                if (iv.tag != key) return@loadBitmap
+                if (bmp != null) {
+                    iv.setImageBitmap(bmp)
+                    onLoaded()
+                } else {
+                    step(i + 1)
+                }
+            }
+        }
+        step(0)
     }
 
     // =====================================================================
@@ -1423,7 +1728,7 @@ class MainActivity : Activity() {
     private fun launchApp(app: AppItem) {
         try {
             if (app.pkg == SETTINGS_PKG) {
-                startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                openSettings()
             } else {
                 val i = packageManager.getLeanbackLaunchIntentForPackage(app.pkg)
                     ?: packageManager.getLaunchIntentForPackage(app.pkg)
@@ -1434,7 +1739,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Long-press OK: move an app between the dock and the Apps grid (remembered). */
+    /** Long-press OK: move an app between the dock and the All Apps row (remembered). */
     private fun toggleDock(app: AppItem) {
         if (app.pkg == SETTINGS_PKG) return
         val toDock = !isOtt(app)
@@ -1449,24 +1754,51 @@ class MainActivity : Activity() {
             .putStringSet(KEY_DOCK, HashSet<String>(forceDock))
             .putStringSet(KEY_GRID, HashSet<String>(forceGrid))
             .apply()
-        rebuildLists()
-        dockAdapter.notifyDataSetChanged()
-        gridAdapter.notifyDataSetChanged()
+        refreshAppRows()
         Toast.makeText(
             this,
-            if (toDock) "${app.label} moved to the dock" else "${app.label} moved to Apps",
+            if (toDock) "${app.label} moved to the dock" else "${app.label} moved to All Apps",
             Toast.LENGTH_SHORT
         ).show()
         if (toDock) {
-            focusPosition(list, dockApps.indexOfFirst { it.pkg == app.pkg })
+            focusPosition(dockRv, dockApps.indexOfFirst { it.pkg == app.pkg })
         } else {
-            focusPosition(grid, gridApps.indexOfFirst { it.pkg == app.pkg })
+            focusPosition(appsRv, gridApps.indexOfFirst { it.pkg == app.pkg })
         }
     }
 
+    private fun refreshAppRows() {
+        rebuildLists()
+        dockAdapter.notifyDataSetChanged()
+        appsAdapter.notifyDataSetChanged()
+        layoutDockPadding()
+    }
+
+    private fun resetLayout() {
+        forceDock.clear()
+        forceGrid.clear()
+        prefs.edit().remove(KEY_DOCK).remove(KEY_GRID).apply()
+        refreshAppRows()
+        Toast.makeText(this, "Dock and All Apps reset", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Few apps in the dock: keep them centred in the glass instead of hugging the left edge. */
+    private fun layoutDockPadding() {
+        val contentW = dockApps.size * slotW
+        val pad = if (contentW + 2 * edgePad < panelWpx) ((panelWpx - contentW) / 2).coerceAtLeast(edgePad) else edgePad
+        dockRv.setPadding(pad, 0, pad, 0)
+    }
+
     // =====================================================================
-    // Focus helpers
+    // Rows, focus & scrolling
     // =====================================================================
+
+    private fun rowCount(row: Int): Int = when (row) {
+        R_DOCK -> dockApps.size
+        R_RECENT -> recentItems.size
+        R_APPS -> gridApps.size
+        else -> recItems.size
+    }
 
     private fun focusPosition(rv: RecyclerView, idx: Int) {
         if (idx < 0) return
@@ -1480,11 +1812,121 @@ class MainActivity : Activity() {
     }
 
     private fun focusDock() {
-        if (dockApps.isEmpty()) {
-            if (gridApps.isNotEmpty()) focusPosition(grid, lastGridPos.coerceIn(0, gridApps.size - 1))
-            return
+        for (r in 0..3) {
+            val rv = rowRv[r] ?: continue
+            if (rowCount(r) > 0) {
+                focusPosition(rv, lastPos[r].coerceIn(0, rowCount(r) - 1))
+                return
+            }
         }
-        focusPosition(list, lastDockPos.coerceIn(0, dockApps.size - 1))
+    }
+
+    /** D-pad up/down between rows (skips empty rows). Down at the very bottom is swallowed. */
+    private fun moveVertical(from: Int, dir: Int): Boolean {
+        var i = from + dir
+        while (i in 0..3) {
+            val rv = rowRv[i]
+            if (rv != null && rowCount(i) > 0) {
+                focusPosition(rv, lastPos[i].coerceIn(0, rowCount(i) - 1))
+                return true
+            }
+            i += dir
+        }
+        return dir > 0
+    }
+
+    /** Scroll the page so the focused row sits near the top (dock row = page top). */
+    private fun scrollToRow(row: Int) {
+        val target = if (row == R_DOCK) 0 else ((rowSection[row]?.top ?: 0) - (screenH * 0.15f).toInt()).coerceAtLeast(0)
+        val maxY = (content.height - scroll.height).coerceAtLeast(0)
+        scroll.smoothScrollTo(0, target.coerceAtMost(maxY))
+    }
+
+    private fun centeringLayoutManager(): LinearLayoutManager =
+        object : LinearLayoutManager(this, RecyclerView.HORIZONTAL, false) {
+            // We centre the focused tile ourselves, so skip the default "just make it visible" scroll.
+            override fun requestChildRectangleOnScreen(
+                parent: RecyclerView,
+                child: View,
+                rect: Rect,
+                immediate: Boolean,
+                focusedChildVisible: Boolean
+            ): Boolean = false
+        }
+
+    private fun centerOn(rv: RecyclerView, v: View) {
+        val slot = v.parent as? View ?: return
+        val dx = (slot.left + slot.width / 2) - rv.width / 2
+        if (dx != 0) rv.smoothScrollBy(dx, 0)
+    }
+
+    private fun updateEmpty(row: Int) {
+        val rv = rowRv[row] ?: return
+        val empty = rowCount(row) == 0
+        rv.visibility = if (empty) View.GONE else View.VISIBLE
+        rowEmpty[row]?.visibility = if (empty) View.VISIBLE else View.GONE
+    }
+
+    private fun sectionHeader(title: String, hint: String?, startX: Int): LinearLayout {
+        val h = LinearLayout(this)
+        h.orientation = LinearLayout.HORIZONTAL
+        h.gravity = Gravity.CENTER_VERTICAL
+        val t = TextView(this)
+        t.text = title
+        t.setTextColor(Color.argb(190, 255, 255, 255))
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+        t.setTypeface(Typeface.DEFAULT_BOLD)
+        t.letterSpacing = 0.3f
+        h.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+        if (hint != null) {
+            val ht = TextView(this)
+            ht.text = hint
+            ht.setTextColor(Color.argb(95, 255, 255, 255))
+            ht.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.009f)
+            h.addView(ht, LinearLayout.LayoutParams(WRAP, WRAP))
+        }
+        h.setPadding(startX, 0, startX, (screenW * 0.006f).toInt())
+        return h
+    }
+
+    /** A titled, horizontally sliding row. Row 0 (dock) is built separately. */
+    private fun makeSection(
+        row: Int,
+        title: String,
+        hint: String?,
+        rvHeight: Int,
+        adapter: RecyclerView.Adapter<RecyclerView.ViewHolder>,
+        startX: Int,
+        emptyText: String
+    ): LinearLayout {
+        val section = LinearLayout(this)
+        section.orientation = LinearLayout.VERTICAL
+        section.clipChildren = false
+        section.clipToPadding = false
+        section.addView(sectionHeader(title, hint, startX), LinearLayout.LayoutParams(MATCH, WRAP))
+
+        val rv = RecyclerView(this)
+        rv.layoutManager = centeringLayoutManager()
+        rv.clipChildren = false
+        rv.clipToPadding = false
+        rv.setPadding(outer + edgePad, 0, outer + edgePad, 0)
+        rv.setItemViewCacheSize(6)
+        rv.itemAnimator = null
+        rv.overScrollMode = View.OVER_SCROLL_NEVER
+        rv.adapter = adapter
+        section.addView(rv, LinearLayout.LayoutParams(MATCH, rvHeight))
+        rowRv[row] = rv
+
+        val empty = TextView(this)
+        empty.text = emptyText
+        empty.setTextColor(Color.argb(120, 255, 255, 255))
+        empty.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        empty.setPadding(startX, (screenW * 0.006f).toInt(), startX, (screenW * 0.012f).toInt())
+        section.addView(empty, LinearLayout.LayoutParams(MATCH, WRAP))
+        rowEmpty[row] = empty
+
+        rowSection[row] = section
+        return section
     }
 
     // =====================================================================
@@ -1526,16 +1968,11 @@ class MainActivity : Activity() {
     }
 
     // =====================================================================
-    // Tiles (shared by the dock and the Apps grid)
+    // Tiles (dock + All Apps) and cards (Recently watched / Recommended)
     // =====================================================================
 
-    private fun centerOn(v: View) {
-        val slot = v.parent as? View ?: return
-        val dx = (slot.left + slot.width / 2) - list.width / 2
-        if (dx != 0) list.smoothScrollBy(dx, 0)
-    }
-
-    private fun buildTile(app: AppItem, inDock: Boolean): View {
+    private fun buildTile(app: AppItem, row: Int): View {
+        val inDock = row == R_DOCK
         val r = radius
         val glowColor = withValue(app.tint, 1f, 1.3f)
 
@@ -1618,6 +2055,8 @@ class MainActivity : Activity() {
         label.setPadding(0, (screenW * 0.006f).toInt(), 0, 0)
         label.alpha = restingLabel
         label.layoutParams = LinearLayout.LayoutParams(tileW, WRAP)
+        // No label in the dock: the tile is then the only child and sits exactly in the middle of the glass.
+        if (inDock) label.visibility = View.GONE
 
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
@@ -1636,19 +2075,16 @@ class MainActivity : Activity() {
         col.setOnFocusChangeListener { v, focused ->
             val s = if (focused) 1.12f else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(160).start()
-            // lift the whole slot above its neighbours while focused
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
             label.animate().alpha(if (focused) 1f else restingLabel).setDuration(160).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             glow.animate().alpha(if (focused) 1f else 0f).setDuration(220).start()
             if (focused) {
-                if (inDock) {
-                    lastDockPos = dockApps.indexOfFirst { it.pkg == app.pkg }.coerceAtLeast(0)
-                    centerOn(v)
-                } else {
-                    lastGridPos = gridApps.indexOfFirst { it.pkg == app.pkg }.coerceAtLeast(0)
-                }
-                onAppFocused(app)
+                val list = if (inDock) dockApps else gridApps
+                lastPos[row] = list.indexOfFirst { it.pkg == app.pkg }.coerceAtLeast(0)
+                rowRv[row]?.let { centerOn(it, v) }
+                scrollToRow(row)
+                if (inDock) onAppFocused(app) else setTint(app.tint)
             }
         }
         col.setOnClickListener { launchApp(app) }
@@ -1657,32 +2093,139 @@ class MainActivity : Activity() {
             true
         }
         col.setOnKeyListener { _, keyCode, ev ->
-            if (ev.action != KeyEvent.ACTION_DOWN) {
-                false
-            } else if (inDock && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                if (gridApps.isNotEmpty()) {
-                    focusPosition(grid, lastGridPos.coerceIn(0, gridApps.size - 1))
-                    true
-                } else false
-            } else if (!inDock && keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-                val pos = gridApps.indexOfFirst { it.pkg == app.pkg }
-                if (pos in 0 until gridSpan) {
-                    focusDock()
-                    true
-                } else false
-            } else false
+            if (ev.action != KeyEvent.ACTION_DOWN) false
+            else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moveVertical(row, 1)
+            else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) moveVertical(row, -1)
+            else false
         }
         return col
     }
 
-    inner class TileAdapter(private val apps: List<AppItem>, private val inDock: Boolean) :
+    private fun buildCard(item: HeroItem, row: Int, position: Int): View {
+        val app = appByPkg[item.pkg]
+        val tint = app?.tint ?: defaultTint
+        val r = radius * 1.3f
+
+        val card = FrameLayout(this)
+        card.layoutParams = LinearLayout.LayoutParams(cardW, cardH)
+        val cardBg = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(withValue(tint, 0.55f, 1.1f), withValue(tint, 0.22f, 1.1f))
+        )
+        cardBg.cornerRadius = r
+        card.background = cardBg
+        card.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, r)
+            }
+        }
+        card.clipToOutline = true
+
+        // placeholder (app icon) shown until the artwork arrives
+        val ph = ImageView(this)
+        if (app != null) ph.setImageDrawable(app.art)
+        ph.scaleType = ImageView.ScaleType.FIT_CENTER
+        val ps = (cardH * 0.4f).toInt()
+        card.addView(ph, FrameLayout.LayoutParams(ps, ps, Gravity.CENTER))
+
+        val img = ImageView(this)
+        img.scaleType = ImageView.ScaleType.CENTER_CROP
+        img.alpha = 0f
+        card.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
+        loadInto(img, item.images, (cardW * 1.3f).toInt()) {
+            ph.visibility = View.GONE
+            img.animate().alpha(1f).setDuration(250).start()
+        }
+
+        val gloss = View(this)
+        gloss.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(40, 255, 255, 255), Color.TRANSPARENT)
+        )
+        card.addView(gloss, FrameLayout.LayoutParams(MATCH, cardH / 2, Gravity.TOP))
+
+        if (item.progress > 0.01f) {
+            val barH = (screenW * 0.0032f).toInt().coerceAtLeast(4)
+            val track = View(this)
+            track.setBackgroundColor(Color.argb(110, 255, 255, 255))
+            card.addView(track, FrameLayout.LayoutParams(MATCH, barH, Gravity.BOTTOM))
+            val fill = View(this)
+            fill.setBackgroundColor(Color.WHITE)
+            card.addView(
+                fill,
+                FrameLayout.LayoutParams((cardW * item.progress).toInt().coerceAtLeast(barH), barH, Gravity.BOTTOM or Gravity.START)
+            )
+        }
+
+        val ring = View(this)
+        val ringBg = GradientDrawable()
+        ringBg.cornerRadius = r
+        ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
+        ringBg.setColor(Color.TRANSPARENT)
+        ring.background = ringBg
+        ring.alpha = 0f
+        card.addView(ring, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val title = TextView(this)
+        title.text = item.title ?: app?.label.orEmpty()
+        title.setTextColor(Color.WHITE)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        title.setTypeface(Typeface.DEFAULT_BOLD)
+        title.maxLines = 1
+        title.ellipsize = TextUtils.TruncateAt.END
+        title.alpha = 0.75f
+        title.setPadding(0, (screenW * 0.006f).toInt(), 0, 0)
+
+        val sub = TextView(this)
+        sub.text = app?.label.orEmpty()
+        sub.setTextColor(Color.argb(150, 255, 255, 255))
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0095f)
+        sub.maxLines = 1
+        sub.ellipsize = TextUtils.TruncateAt.END
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.clipChildren = false
+        col.isFocusable = true
+        col.isClickable = true
+        col.addView(card)
+        col.addView(title, LinearLayout.LayoutParams(cardW, WRAP))
+        col.addView(sub, LinearLayout.LayoutParams(cardW, WRAP))
+        col.pivotX = cardW / 2f
+        col.pivotY = cardH / 2f
+        if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
+
+        col.setOnFocusChangeListener { v, focused ->
+            val s = if (focused) 1.08f else 1f
+            v.animate().scaleX(s).scaleY(s).setDuration(160).start()
+            (v.parent as? View)?.translationZ = if (focused) 20f else 0f
+            ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            title.animate().alpha(if (focused) 1f else 0.75f).setDuration(160).start()
+            if (focused) {
+                lastPos[row] = position
+                rowRv[row]?.let { centerOn(it, v) }
+                scrollToRow(row)
+                setTint(tint)
+            }
+        }
+        col.setOnClickListener { launchHero(item) }
+        col.setOnKeyListener { _, keyCode, ev ->
+            if (ev.action != KeyEvent.ACTION_DOWN) false
+            else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moveVertical(row, 1)
+            else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) moveVertical(row, -1)
+            else false
+        }
+        return col
+    }
+
+    inner class TileAdapter(private val apps: List<AppItem>, private val row: Int) :
         RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
         override fun getItemCount() = apps.size
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
             val slot = FrameLayout(parent.context)
-            slot.layoutParams = RecyclerView.LayoutParams(slotW, if (inDock) MATCH else slotH)
+            slot.layoutParams = RecyclerView.LayoutParams(slotW, MATCH)
             slot.clipChildren = false
             return object : RecyclerView.ViewHolder(slot) {}
         }
@@ -1690,12 +2233,608 @@ class MainActivity : Activity() {
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
             val slot = holder.itemView as FrameLayout
             slot.removeAllViews()
+            val inDock = row == R_DOCK
             val lp = FrameLayout.LayoutParams(
                 tileW, WRAP,
                 if (inDock) Gravity.CENTER else (Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             )
-            if (!inDock) lp.topMargin = (gap * 0.4f).toInt()
-            slot.addView(buildTile(apps[position], inDock), lp)
+            if (!inDock) lp.topMargin = (gap * 0.6f).toInt()
+            slot.addView(buildTile(apps[position], row), lp)
+        }
+    }
+
+    inner class FeedAdapter(private val items: List<HeroItem>, private val row: Int) :
+        RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+        override fun getItemCount() = items.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val slot = FrameLayout(parent.context)
+            slot.layoutParams = RecyclerView.LayoutParams(slotCardW, MATCH)
+            slot.clipChildren = false
+            return object : RecyclerView.ViewHolder(slot) {}
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            val slot = holder.itemView as FrameLayout
+            slot.removeAllViews()
+            val lp = FrameLayout.LayoutParams(cardW, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            lp.topMargin = (gap * 0.6f).toInt()
+            slot.addView(buildCard(items[position], row, position), lp)
+        }
+    }
+
+    // =====================================================================
+    // Shared list row (Wi-Fi dropdown + Settings): white pill when focused, like tvOS
+    // =====================================================================
+
+    private fun menuRow(
+        rowW: Int,
+        rowH: Int,
+        textPx: Float,
+        lead: Drawable?,
+        leadBg: Int?,          // coloured badge behind a white glyph (Settings); null = plain icon
+        title: String,
+        value: String?,
+        chevron: Boolean,
+        focusScale: Float,
+        onClick: () -> Unit
+    ): RowViews {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val lp = LinearLayout.LayoutParams(rowW, rowH)
+        lp.bottomMargin = (rowH * 0.12f).toInt()
+        row.layoutParams = lp
+        val padH = (rowH * 0.30f).toInt()
+        row.setPadding(padH, 0, padH, 0)
+        row.clipChildren = false
+        val idle = Color.argb(26, 255, 255, 255)
+        val bg = GradientDrawable()
+        bg.cornerRadius = rowH * 0.30f
+        bg.setColor(idle)
+        row.background = bg
+        row.isFocusable = true
+        row.isClickable = true
+        if (Build.VERSION.SDK_INT >= 26) row.defaultFocusHighlightEnabled = false
+
+        var leadView: ImageView? = null
+        if (lead != null) {
+            val size = (rowH * 0.62f).toInt()
+            val iv = ImageView(this)
+            iv.setImageDrawable(lead)
+            iv.scaleType = ImageView.ScaleType.FIT_CENTER
+            val ip = if (leadBg != null) (size * 0.2f).toInt() else (size * 0.1f).toInt()
+            iv.setPadding(ip, ip, ip, ip)
+            if (leadBg != null) {
+                val b = GradientDrawable()
+                b.cornerRadius = size * 0.24f
+                b.setColor(leadBg)
+                iv.background = b
+            }
+            val llp = LinearLayout.LayoutParams(size, size)
+            llp.rightMargin = (padH * 0.8f).toInt()
+            row.addView(iv, llp)
+            leadView = iv
+        }
+
+        val t = TextView(this)
+        t.text = title
+        t.setTextColor(Color.WHITE)
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx)
+        t.maxLines = 1
+        t.ellipsize = TextUtils.TruncateAt.END
+        row.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        var v: TextView? = null
+        if (value != null) {
+            val vt = TextView(this)
+            vt.text = value
+            vt.setTextColor(Color.argb(150, 255, 255, 255))
+            vt.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx * 0.82f)
+            vt.maxLines = 1
+            vt.ellipsize = TextUtils.TruncateAt.END
+            val vlp = LinearLayout.LayoutParams(WRAP, WRAP)
+            vlp.leftMargin = padH / 2
+            row.addView(vt, vlp)
+            v = vt
+        }
+        var chev: TextView? = null
+        if (chevron) {
+            val ct = TextView(this)
+            ct.text = "\u203A"
+            ct.setTextColor(Color.argb(150, 255, 255, 255))
+            ct.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx * 1.3f)
+            val clp = LinearLayout.LayoutParams(WRAP, WRAP)
+            clp.leftMargin = padH / 2
+            row.addView(ct, clp)
+            chev = ct
+        }
+
+        val valueRef = v
+        val chevRef = chev
+        val leadRef = leadView
+        row.setOnFocusChangeListener { view, focused ->
+            bg.setColor(if (focused) Color.WHITE else idle)
+            t.setTextColor(if (focused) Color.BLACK else Color.WHITE)
+            val dim = if (focused) Color.argb(160, 0, 0, 0) else Color.argb(150, 255, 255, 255)
+            valueRef?.setTextColor(dim)
+            chevRef?.setTextColor(dim)
+            if (leadRef != null && leadBg == null) leadRef.setColorFilter(if (focused) Color.BLACK else Color.WHITE)
+            if (focusScale != 1f) {
+                val s = if (focused) focusScale else 1f
+                view.animate().scaleX(s).scaleY(s).setDuration(140).start()
+            }
+            (view.parent as? View)?.translationZ = if (focused) 10f else 0f
+        }
+        row.setOnClickListener { onClick() }
+        return RowViews(row, t, v)
+    }
+
+    // =====================================================================
+    // Wi-Fi dropdown (opens under the Wi-Fi icon, lets you pick / join a network)
+    // =====================================================================
+
+    private fun buildWifiPanel(topMargin: Int, rightMargin: Int): FrameLayout {
+        val panel = FrameLayout(this)
+        val bg = GradientDrawable()
+        bg.cornerRadius = screenW * 0.014f
+        bg.setColor(Color.argb(240, 26, 27, 36))
+        bg.setStroke(2, Color.argb(70, 255, 255, 255))
+        panel.background = bg
+        panel.elevation = 40f
+        panel.clipChildren = false
+
+        val pad = (screenW * 0.008f).toInt()
+        wifiScroll = ScrollView(this)
+        wifiScroll.isFocusable = false
+        wifiScroll.isVerticalScrollBarEnabled = false
+        wifiScroll.overScrollMode = View.OVER_SCROLL_NEVER
+        wifiScroll.clipToPadding = false
+        wifiScroll.setPadding(pad, pad, pad, pad)
+        wifiList = LinearLayout(this)
+        wifiList.orientation = LinearLayout.VERTICAL
+        wifiScroll.addView(wifiList, FrameLayout.LayoutParams(MATCH, WRAP))
+        panel.addView(wifiScroll, FrameLayout.LayoutParams(MATCH, WRAP))
+
+        val lp = FrameLayout.LayoutParams((screenW * 0.29f).toInt(), WRAP, Gravity.TOP or Gravity.END)
+        lp.setMargins(0, topMargin, rightMargin, 0)
+        panel.layoutParams = lp
+        panel.visibility = View.GONE
+        return panel
+    }
+
+    private fun wifiManager(): WifiManager =
+        applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+
+    @Suppress("DEPRECATION")
+    private fun currentSsid(): String? {
+        return try {
+            val info = wifiManager().connectionInfo
+            val s = info?.ssid?.trim('"')
+            if (s.isNullOrBlank() || s == "<unknown ssid>" || info?.networkId == -1) null else s
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun toggleWifiPanel() {
+        if (wifiOpen) closeWifiPanel(true) else openWifiPanel()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startWifiScan() {
+        try {
+            wifiManager().startScan()
+        } catch (e: Exception) {
+            Log.w(TAG, "startScan failed", e)
+        }
+    }
+
+    private fun openWifiPanel() {
+        wifiOpen = true
+        homeGroup.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        if (!hasLocationPermission() && Build.VERSION.SDK_INT >= 23) {
+            // Android only returns the list of nearby networks to apps that may see the location
+            requestPermissions(arrayOf(LOC_PERM), 78)
+        }
+        if (!wifiRecvRegistered) {
+            registerReceiver(wifiReceiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
+            wifiRecvRegistered = true
+        }
+        startWifiScan()
+        wifiPanel.alpha = 0f
+        wifiPanel.visibility = View.VISIBLE
+        wifiPanel.animate().alpha(1f).setDuration(160).start()
+        populateWifi()
+        wifiList.post { wifiList.getChildAt(0)?.requestFocus() }
+    }
+
+    private fun closeWifiPanel(refocus: Boolean) {
+        wifiOpen = false
+        unregisterWifiReceiver()
+        wifiPanel.visibility = View.GONE
+        homeGroup.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
+        if (refocus) wifiBtnView.requestFocus()
+    }
+
+    private fun unregisterWifiReceiver() {
+        if (wifiRecvRegistered) {
+            try {
+                unregisterReceiver(wifiReceiver)
+            } catch (e: Exception) {
+                // ignore
+            }
+            wifiRecvRegistered = false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun collectNetworks(wm: WifiManager): List<WNet> {
+        val connected = currentSsid()
+        val saved = HashMap<String, Int>()
+        try {
+            val cfgs = wm.configuredNetworks
+            if (cfgs != null) {
+                for (c in cfgs) {
+                    val s = c.SSID?.trim('"') ?: continue
+                    saved[s] = c.networkId
+                }
+            }
+        } catch (e: Exception) {
+            // not allowed on newer Android
+        }
+        val results = try {
+            wm.scanResults ?: emptyList<ScanResult>()
+        } catch (e: Exception) {
+            emptyList<ScanResult>()
+        }
+        val best = LinkedHashMap<String, ScanResult>()
+        for (r in results.sortedByDescending { it.level }) {
+            val s = r.SSID ?: continue
+            if (s.isBlank()) continue
+            if (!best.containsKey(s)) best[s] = r
+        }
+        val out = ArrayList<WNet>()
+        for ((s, r) in best) out.add(WNet(s, r.capabilities ?: "", r.level, s == connected, saved[s] ?: -1))
+        if (connected != null && out.none { it.connected }) {
+            val rssi = try { wm.connectionInfo.rssi } catch (e: Exception) { -60 }
+            out.add(WNet(connected, "", rssi, true, saved[connected] ?: -1))
+        }
+        out.sortWith(
+            compareByDescending<WNet> { it.connected }
+                .thenByDescending { it.netId >= 0 }
+                .thenByDescending { it.level }
+        )
+        return out
+    }
+
+    private fun isSecured(caps: String): Boolean =
+        caps.contains("WEP") || caps.contains("PSK") || caps.contains("EAP") || caps.contains("SAE")
+
+    @Suppress("DEPRECATION")
+    private fun populateWifi() {
+        if (!wifiOpen) return
+        val keepKey = (wifiList.focusedChild?.tag as? String)
+        wifiList.removeAllViews()
+        val wm = wifiManager()
+        val on = try { wm.isWifiEnabled } catch (e: Exception) { true }
+        val rowW = MATCH
+        val rowH = (screenW * 0.036f).toInt()
+        val textPx = screenW * 0.0125f
+        var rows = 0
+
+        val toggle = menuRow(rowW, rowH, textPx, WifiDrawable(Color.WHITE), null, "Wi-Fi",
+            if (on) "On" else "Off", false, 1f) {
+            try {
+                if (Build.VERSION.SDK_INT >= 29 || !wm.setWifiEnabled(!on)) {
+                    closeWifiPanel(false)
+                    openSystem(Settings.ACTION_WIFI_SETTINGS)
+                } else {
+                    handler.postDelayed({
+                        if (wifiOpen) {
+                            startWifiScan()
+                            populateWifi()
+                        }
+                    }, 1500)
+                    populateWifi()
+                }
+            } catch (e: Exception) {
+                closeWifiPanel(false)
+                openSystem(Settings.ACTION_WIFI_SETTINGS)
+            }
+        }
+        toggle.row.tag = "__toggle"
+        toggle.row.setOnKeyListener { _, keyCode, ev ->
+            if (ev.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                closeWifiPanel(true)
+                true
+            } else false
+        }
+        wifiList.addView(toggle.row)
+        rows++
+
+        if (on) {
+            val nets = collectNetworks(wm)
+            if (nets.isEmpty()) {
+                val msg = TextView(this)
+                msg.text = if (hasLocationPermission()) "Looking for networks…" else "Allow Location access to see nearby networks"
+                msg.setTextColor(Color.argb(150, 255, 255, 255))
+                msg.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx * 0.85f)
+                msg.setPadding((rowH * 0.3f).toInt(), (rowH * 0.2f).toInt(), (rowH * 0.3f).toInt(), (rowH * 0.2f).toInt())
+                wifiList.addView(msg, LinearLayout.LayoutParams(MATCH, WRAP))
+                rows++
+            }
+            for (n in nets) {
+                val d = WifiDrawable(Color.WHITE)
+                d.update(if (n.level >= -60) 3 else if (n.level >= -72) 2 else 1, true)
+                val sub = if (n.connected) "Connected \u2713" else if (n.netId >= 0) "Saved" else if (isSecured(n.caps)) "Secured" else "Open"
+                val rv = menuRow(rowW, rowH, textPx, d, null, n.ssid, sub, false, 1f) { connectToNet(n) }
+                rv.row.tag = "net:" + n.ssid
+                wifiList.addView(rv.row)
+                rows++
+            }
+        }
+
+        val more = menuRow(rowW, rowH, textPx, null, null, "More Wi-Fi settings\u2026", null, true, 1f) {
+            closeWifiPanel(false)
+            openSystem(Settings.ACTION_WIFI_SETTINGS)
+        }
+        more.row.tag = "__more"
+        wifiList.addView(more.row)
+        rows++
+
+        val maxH = (screenH * 0.55f).toInt()
+        val wantH = rows * (rowH + (rowH * 0.12f).toInt()) + 2 * (screenW * 0.008f).toInt() + (rowH * 0.2f).toInt()
+        val slp = wifiScroll.layoutParams
+        slp.height = if (wantH > maxH) maxH else WRAP
+        wifiScroll.layoutParams = slp
+
+        if (keepKey != null) {
+            for (i in 0 until wifiList.childCount) {
+                val c = wifiList.getChildAt(i)
+                if (c.tag == keepKey) {
+                    c.requestFocus()
+                    break
+                }
+            }
+        }
+    }
+
+    private fun connectToNet(n: WNet) {
+        if (n.connected) {
+            Toast.makeText(this, "Already connected to ${n.ssid}", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 29 || n.caps.contains("EAP")) {
+            // Android 10+ no longer lets apps join networks silently; hand over to system Wi-Fi settings.
+            Toast.makeText(this, "Choose ${n.ssid} in Wi-Fi settings", Toast.LENGTH_LONG).show()
+            closeWifiPanel(false)
+            openSystem(Settings.ACTION_WIFI_SETTINGS)
+            return
+        }
+        if (n.netId >= 0) {
+            joinSaved(n.netId, n.ssid)
+        } else if (!isSecured(n.caps)) {
+            joinNew(n.ssid, n.caps, null)
+        } else {
+            askPassword(n)
+        }
+    }
+
+    private fun askPassword(n: WNet) {
+        val input = EditText(this)
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        input.hint = "Password"
+        input.setSingleLine()
+        val p = (screenW * 0.012f).toInt()
+        val box = FrameLayout(this)
+        box.setPadding(p, p, p, 0)
+        box.addView(input, FrameLayout.LayoutParams(MATCH, WRAP))
+        val dlg = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Join " + n.ssid)
+            .setView(box)
+            .setPositiveButton("Connect") { _, _ -> joinNew(n.ssid, n.caps, input.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .create()
+        dlg.show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun joinNew(ssid: String, caps: String, pw: String?) {
+        try {
+            val wm = wifiManager()
+            val c = WifiConfiguration()
+            c.SSID = "\"" + ssid + "\""
+            if (pw == null) {
+                c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE)
+            } else if (caps.contains("WEP") && !caps.contains("WPA")) {
+                c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE)
+                c.allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.OPEN)
+                c.wepKeys[0] = "\"" + pw + "\""
+                c.wepTxKeyIndex = 0
+            } else {
+                c.preSharedKey = "\"" + pw + "\""
+            }
+            val id = wm.addNetwork(c)
+            if (id < 0) {
+                Toast.makeText(this, "Couldn't add $ssid. Try Wi-Fi settings.", Toast.LENGTH_LONG).show()
+                closeWifiPanel(false)
+                openSystem(Settings.ACTION_WIFI_SETTINGS)
+            } else {
+                joinSaved(id, ssid)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "joinNew failed", e)
+            closeWifiPanel(false)
+            openSystem(Settings.ACTION_WIFI_SETTINGS)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun joinSaved(netId: Int, ssid: String) {
+        try {
+            val wm = wifiManager()
+            wm.disconnect()
+            wm.enableNetwork(netId, true)
+            wm.reconnect()
+            Toast.makeText(this, "Connecting to $ssid\u2026", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.w(TAG, "joinSaved failed", e)
+        }
+        closeWifiPanel(true)
+        handler.postDelayed({ refreshStatus() }, 5000)
+    }
+
+    // =====================================================================
+    // Settings screen (Apple TV style: big centred list, white pill on focus)
+    // =====================================================================
+
+    private fun settingsIcon(kind: Int): Drawable = when (kind) {
+        0 -> GearDrawable(Color.WHITE)
+        1 -> AvatarDrawable()
+        2 -> GlyphDrawable(GlyphDrawable.TV)
+        3 -> GlyphDrawable(GlyphDrawable.MOON)
+        4 -> GlyphDrawable(GlyphDrawable.REMOTE)
+        5 -> GlyphDrawable(GlyphDrawable.GRID)
+        6 -> WifiDrawable(Color.WHITE)
+        7 -> GlyphDrawable(GlyphDrawable.INFO)
+        else -> GlyphDrawable(GlyphDrawable.HOME)
+    }
+
+    private fun sys(action: String): () -> Unit = { openSystem(action) }
+
+    private fun settingsRoot(): List<SItem> {
+        val acct = googleAccount() ?: "Not signed in"
+        val net = currentSsid() ?: "Not connected"
+        return listOf(
+            SItem("General", 0, Color.parseColor("#8e8e93"), sub = listOf(
+                SItem("Date and Time", action = sys(Settings.ACTION_DATE_SETTINGS)),
+                SItem("Language", action = sys(Settings.ACTION_LOCALE_SETTINGS)),
+                SItem("Keyboard", action = sys(Settings.ACTION_INPUT_METHOD_SETTINGS)),
+                SItem("Storage", action = sys(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)),
+                SItem("Accessibility", action = sys(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
+                SItem("About", action = sys(Settings.ACTION_DEVICE_INFO_SETTINGS))
+            )),
+            SItem("Users and Accounts", 1, Color.parseColor("#3478f6"), value = acct,
+                action = sys(Settings.ACTION_SYNC_SETTINGS)),
+            SItem("Video and Audio", 2, Color.parseColor("#30a46c"), sub = listOf(
+                SItem("Video and Display", action = sys(Settings.ACTION_DISPLAY_SETTINGS)),
+                SItem("Audio and Sound", action = sys(Settings.ACTION_SOUND_SETTINGS))
+            )),
+            SItem("Screen Saver", 3, Color.parseColor("#af52de"), action = sys(Settings.ACTION_DREAM_SETTINGS)),
+            SItem("Remotes and Devices", 4, Color.parseColor("#ff9f0a"), action = sys(Settings.ACTION_BLUETOOTH_SETTINGS)),
+            SItem("Apps", 5, Color.parseColor("#0a84ff"), action = sys(Settings.ACTION_APPLICATION_SETTINGS)),
+            SItem("Network", 6, Color.parseColor("#30b0c7"), value = net, action = sys(Settings.ACTION_WIFI_SETTINGS)),
+            SItem("Home Screen", 8, Color.parseColor("#ff375f"), sub = listOf(
+                SItem("Reset Dock and All Apps", action = { resetLayout() })
+            )),
+            SItem("System", 7, Color.parseColor("#636366"), value = "Android Settings", action = sys(Settings.ACTION_SETTINGS))
+        )
+    }
+
+    private fun buildSettingsLayer(): FrameLayout {
+        val layer = FrameLayout(this)
+        layer.setBackgroundColor(Color.BLACK)
+        val bgAurora = AuroraView(this)
+        bgAurora.setTint(Color.parseColor("#4b3f8f"))
+        layer.addView(bgAurora, FrameLayout.LayoutParams(MATCH, MATCH))
+        val dark = View(this)
+        dark.setBackgroundColor(Color.argb(175, 0, 0, 0))
+        layer.addView(dark, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        settingsCrumb = TextView(this)
+        settingsCrumb.text = "SETTINGS"
+        settingsCrumb.setTextColor(Color.argb(150, 255, 255, 255))
+        settingsCrumb.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+        settingsCrumb.setTypeface(Typeface.DEFAULT_BOLD)
+        settingsCrumb.letterSpacing = 0.3f
+        val crumbLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        crumbLp.topMargin = (screenH * 0.065f).toInt()
+        layer.addView(settingsCrumb, crumbLp)
+
+        settingsTitle = TextView(this)
+        settingsTitle.setTextColor(Color.WHITE)
+        settingsTitle.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.026f)
+        settingsTitle.setTypeface(Typeface.DEFAULT_BOLD)
+        val titleLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        titleLp.topMargin = (screenH * 0.095f).toInt()
+        layer.addView(settingsTitle, titleLp)
+
+        val colW = (screenW * 0.48f).toInt()
+        val side = (screenW * 0.02f).toInt()
+        settingsScroll = ScrollView(this)
+        settingsScroll.isFocusable = false
+        settingsScroll.isVerticalScrollBarEnabled = false
+        settingsScroll.overScrollMode = View.OVER_SCROLL_NEVER
+        settingsScroll.clipToPadding = false
+        settingsScroll.clipChildren = false
+        settingsScroll.setPadding(side, (screenW * 0.01f).toInt(), side, (screenH * 0.08f).toInt())
+        settingsList = LinearLayout(this)
+        settingsList.orientation = LinearLayout.VERTICAL
+        settingsList.clipChildren = false
+        settingsScroll.addView(settingsList, FrameLayout.LayoutParams(MATCH, WRAP))
+        val sLp = FrameLayout.LayoutParams(colW + 2 * side, MATCH, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        sLp.topMargin = (screenH * 0.2f).toInt()
+        layer.addView(settingsScroll, sLp)
+
+        layer.visibility = View.GONE
+        return layer
+    }
+
+    private fun openSettings() {
+        if (wifiOpen) closeWifiPanel(false)
+        settingsStack.clear()
+        settingsStack.add(Page("Settings", settingsRoot()))
+        settingsOpen = true
+        homeGroup.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        settingsLayer.alpha = 0f
+        settingsLayer.visibility = View.VISIBLE
+        settingsLayer.animate().alpha(1f).setDuration(220).start()
+        showSettingsPage()
+    }
+
+    private fun closeSettings(refocus: Boolean) {
+        settingsOpen = false
+        settingsLayer.visibility = View.GONE
+        homeGroup.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
+        if (refocus) gearBtnView.requestFocus()
+    }
+
+    private fun settingsBack() {
+        if (settingsStack.size > 1) {
+            settingsStack.removeAt(settingsStack.size - 1)
+            showSettingsPage()
+        } else {
+            closeSettings(true)
+        }
+    }
+
+    private fun showSettingsPage() {
+        val page = settingsStack[settingsStack.size - 1]
+        settingsTitle.text = page.title
+        settingsCrumb.visibility = if (settingsStack.size > 1) View.VISIBLE else View.GONE
+        settingsList.removeAllViews()
+        val rowH = (screenW * 0.046f).toInt()
+        val textPx = screenW * 0.0135f
+        for (i in page.items.indices) {
+            val item = page.items[i]
+            val icon = if (item.glyph >= 0) settingsIcon(item.glyph) else null
+            val badge = if (item.glyph >= 0) item.color else null
+            val rv = menuRow(MATCH, rowH, textPx, icon, badge, item.title, item.value, item.sub != null, 1.03f) {
+                if (item.sub != null) {
+                    page.focus = i
+                    settingsStack.add(Page(item.title, item.sub))
+                    showSettingsPage()
+                } else {
+                    item.action?.invoke()
+                }
+            }
+            settingsList.addView(rv.row)
+        }
+        settingsScroll.scrollTo(0, 0)
+        settingsList.post {
+            settingsList.getChildAt(page.focus.coerceIn(0, (settingsList.childCount - 1).coerceAtLeast(0)))?.requestFocus()
         }
     }
 }

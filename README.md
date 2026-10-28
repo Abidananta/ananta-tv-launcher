@@ -2,7 +2,20 @@
 
 Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cinematic background with purple/cyan glow, app discovery, D-pad navigation and a GitHub Actions APK build.
 
-## Layout (v2)
+## Layout (v3)
+
+Top to bottom (the page scrolls vertically, each row slides sideways):
+
+1. **Hero** artwork + title, **Dock** (OTT apps, icons centred in the glass, no labels).
+2. **Recently watched**: Android TV "Watch Next" items from your apps (with progress bar).
+3. **All apps**: one sideways-sliding row.
+4. **Recommended**: channel/preview programs from your apps.
+
+- **Wi-Fi icon** opens a dropdown: on/off, nearby networks, tap to join (password box for secured networks). Android 10+ cannot join silently, so it opens system Wi-Fi settings there. The first time, allow the Location permission (Android needs it to list networks).
+- **Gear icon / Settings tile** opens an in-launcher Apple TV style Settings menu (General, Users and Accounts, Video and Audio, Screen Saver, Remotes and Devices, Apps, Network, Home Screen, System). Back goes up one level.
+- Top-bar focus circle is no longer cropped.
+
+## Layout (v2, older notes)
 
 - **Dock** (glass bar, smaller tiles): only OTT / streaming apps. Tiles slide *inside* the dock and fade at its edges.
 - **All apps** (below the dock, Apple TV style): every other installed app in a grid. D-pad Down from the dock enters it, Up from the first row returns.
