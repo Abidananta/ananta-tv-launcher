@@ -2,6 +2,14 @@
 
 Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cinematic background with purple/cyan glow, app discovery, D-pad navigation and a GitHub Actions APK build.
 
+## Layout (v2)
+
+- **Dock** (glass bar, smaller tiles): only OTT / streaming apps. Tiles slide *inside* the dock and fade at its edges.
+- **All apps** (below the dock, Apple TV style): every other installed app in a grid. D-pad Down from the dock enters it, Up from the first row returns.
+- **Hold OK** on any app to move it between the dock and All apps (remembered).
+- Hero artwork loader: browser User-Agent, redirect handling (incl. http->https), cleartext allowed, jpeg/png/webp only, tries every image the app provides, no more 400-row cap. If an app has no artwork a brand card is shown instead.
+- Debug artwork problems with: `adb logcat -s AnantaTV`
+
 ## What this starter includes
 
 - Android HOME activity so Android can offer it as the Home launcher.
