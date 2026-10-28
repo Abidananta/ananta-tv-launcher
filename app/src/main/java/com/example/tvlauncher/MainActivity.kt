@@ -1,8 +1,12 @@
 package com.example.tvlauncher
 
+import android.animation.AnimatorSet
 import android.animation.ArgbEvaluator
+import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
@@ -11,6 +15,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.Rect
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -19,6 +27,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.TextUtils
 import android.util.LruCache
 import android.util.TypedValue
@@ -27,6 +36,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -37,6 +47,93 @@ import androidx.recyclerview.widget.RecyclerView
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import kotlin.math.cos
+import kotlin.math.sin
+
+/** Soft drifting colored lights, used when there is no artwork. */
+class AuroraView(context: Context) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var base = Color.parseColor("#2b3a67")
+    private var phase = 0f
+    private var shaders: Array<RadialGradient>? = null
+    private var radius = 0f
+    private val anim = ValueAnimator.ofFloat(0f, (Math.PI * 2).toFloat())
+
+    init {
+        anim.duration = 30000
+        anim.repeatCount = ValueAnimator.INFINITE
+        anim.interpolator = LinearInterpolator()
+        anim.addUpdateListener {
+            phase = it.animatedValue as Float
+            invalidate()
+        }
+    }
+
+    fun setTint(c: Int) {
+        base = c
+        shaders = null
+        invalidate()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        anim.start()
+    }
+
+    override fun onDetachedFromWindow() {
+        anim.cancel()
+        super.onDetachedFromWindow()
+    }
+
+    private fun shift(c: Int, deg: Float, v: Float): Int {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(c, hsv)
+        hsv[0] = (hsv[0] + deg + 360f) % 360f
+        hsv[1] = (hsv[1] * 1.1f).coerceIn(0.25f, 1f)
+        hsv[2] = v
+        return Color.HSVToColor(hsv)
+    }
+
+    private fun fade(c: Int, a: Int): Int = Color.argb(a, Color.red(c), Color.green(c), Color.blue(c))
+
+    private fun build(w: Float) {
+        radius = w * 0.55f
+        val cols = intArrayOf(shift(base, 0f, 0.95f), shift(base, 50f, 0.9f), shift(base, -45f, 0.85f))
+        shaders = Array(3) { i ->
+            RadialGradient(
+                0f, 0f, radius,
+                intArrayOf(fade(cols[i], 210), fade(cols[i], 0)),
+                null, Shader.TileMode.CLAMP
+            )
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w == 0f || h == 0f) return
+        canvas.drawColor(Color.parseColor("#05060a"))
+        if (shaders == null) build(w)
+        val s = shaders ?: return
+        val xs = floatArrayOf(
+            w * (0.22f + 0.10f * sin(phase)),
+            w * (0.78f + 0.08f * cos(phase * 1.2f)),
+            w * (0.52f + 0.12f * sin(phase * 0.6f))
+        )
+        val ys = floatArrayOf(
+            h * (0.28f + 0.08f * cos(phase * 0.9f)),
+            h * (0.22f + 0.10f * sin(phase * 0.7f)),
+            h * (0.62f + 0.08f * cos(phase * 1.1f))
+        )
+        for (i in 0 until 3) {
+            canvas.save()
+            canvas.translate(xs[i], ys[i])
+            paint.shader = s[i]
+            canvas.drawCircle(0f, 0f, radius, paint)
+            canvas.restore()
+        }
+    }
+}
 
 class MainActivity : Activity() {
 
@@ -59,6 +156,11 @@ class MainActivity : Activity() {
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     private val TV_PERM = "android.permission.READ_TV_LISTINGS"
+    private val SETTINGS_PKG = "__settings"
+    private val priorityKeys = listOf(
+        "netflix", "youtube", "primevideo", "amazon", "hotstar", "jio", "sony",
+        "zee5", "plex", "disney", "hbo", "spotify", "kodi", "mx"
+    )
 
     private var screenW = 0
     private var screenH = 0
@@ -72,11 +174,17 @@ class MainActivity : Activity() {
     private val defaultTint = Color.parseColor("#2b3a67")
     private var currentTint = defaultTint
     private var tintAnimator: ValueAnimator? = null
-    private lateinit var heroBg: GradientDrawable
+    private var kenBurns: AnimatorSet? = null
+
+    private lateinit var aurora: AuroraView
     private lateinit var heroImg: ImageView
+    private lateinit var blurImg: ImageView
+    private lateinit var metaView: TextView
     private lateinit var titleView: TextView
     private lateinit var descView: TextView
     private lateinit var heroBtn: TextView
+    private lateinit var defaultPill: TextView
+    private lateinit var dots: LinearLayout
     private lateinit var list: RecyclerView
 
     private var heroMap: Map<String, List<HeroItem>> = emptyMap()
@@ -92,36 +200,44 @@ class MainActivity : Activity() {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
+    // =====================================================================
+    // Lifecycle
+    // =====================================================================
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val dm = resources.displayMetrics
         screenW = dm.widthPixels
         screenH = dm.heightPixels
-        outer = (screenW * 0.03f).toInt()
+        outer = (screenW * 0.035f).toInt()
         pad = (screenW * 0.02f).toInt()
         gap = (screenW * 0.012f).toInt()
-        val usable = screenW - 2 * outer - 2 * pad
-        tileW = usable / 6 - gap
-        tileH = (tileW * 0.58f).toInt()
+        tileW = (screenW * 0.112f).toInt()
+        tileH = (tileW * 0.6f).toInt()
         radius = screenW * 0.011f
+
+        // Dock geometry
+        val labelH = (screenW * 0.0115f * 1.6f + screenW * 0.006f).toInt()
+        val padV = (tileH * 0.30f).toInt()
+        val panelH = tileH + labelH + 2 * padV
+        val panelW = screenW - 2 * outer
+        val extra = (tileH * 0.4f).toInt()          // room for the lifted tile: nothing gets cut
+        val bottomMargin = (screenH * 0.07f).toInt()
+        val panelTop = screenH - bottomMargin - panelH
+        val panelR = panelH * 0.3f
 
         val apps = loadApps()
 
         val root = FrameLayout(this)
         root.setBackgroundColor(Color.BLACK)
 
-        // Tinted gradient background
-        heroBg = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.DKGRAY, Color.BLACK, Color.BLACK)
-        )
-        applyTint(defaultTint)
-        val bgView = View(this)
-        bgView.background = heroBg
-        root.addView(bgView, FrameLayout.LayoutParams(MATCH, MATCH))
+        // ---- 1. animated aurora background
+        aurora = AuroraView(this)
+        aurora.setTint(withValue(defaultTint, 0.75f, 1.15f))
+        root.addView(aurora, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // Optional static wallpaper (res/drawable-nodpi/hero.jpg)
+        // ---- 2. optional static wallpaper (res/drawable-nodpi/hero.jpg)
         val heroRes = resources.getIdentifier("hero", "drawable", packageName)
         if (heroRes != 0) {
             val wall = ImageView(this)
@@ -130,47 +246,52 @@ class MainActivity : Activity() {
             root.addView(wall, FrameLayout.LayoutParams(MATCH, MATCH))
         }
 
-        // Dynamic hero artwork from installed OTT apps
+        // ---- 3. hero artwork from OTT apps
         heroImg = ImageView(this)
         heroImg.scaleType = ImageView.ScaleType.CENTER_CROP
         heroImg.alpha = 0f
         root.addView(heroImg, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // Left fade so text is readable
+        // ---- 4. scrims for readability
         val leftScrim = View(this)
         leftScrim.background = GradientDrawable(
             GradientDrawable.Orientation.LEFT_RIGHT,
-            intArrayOf(Color.argb(210, 0, 0, 0), Color.TRANSPARENT)
+            intArrayOf(Color.argb(175, 0, 0, 0), Color.TRANSPARENT)
         )
         root.addView(
             leftScrim,
-            FrameLayout.LayoutParams((screenW * 0.6f).toInt(), MATCH, Gravity.START)
+            FrameLayout.LayoutParams((screenW * 0.55f).toInt(), MATCH, Gravity.START)
         )
-
-        // Bottom fade behind the dock
-        val scrim = View(this)
-        scrim.background = GradientDrawable(
+        val bottomScrim = View(this)
+        bottomScrim.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.TRANSPARENT, Color.argb(235, 0, 0, 0))
+            intArrayOf(Color.TRANSPARENT, Color.argb(225, 0, 0, 0))
         )
         root.addView(
-            scrim,
-            FrameLayout.LayoutParams(MATCH, (screenH * 0.6f).toInt(), Gravity.BOTTOM)
+            bottomScrim,
+            FrameLayout.LayoutParams(MATCH, (screenH * 0.5f).toInt(), Gravity.BOTTOM)
         )
 
-        // Title + description + button (top-left)
+        // ---- 5. hero text block
+        metaView = TextView(this)
+        metaView.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+        metaView.setTypeface(Typeface.DEFAULT_BOLD)
+        metaView.letterSpacing = 0.2f
+        metaView.visibility = View.GONE
+
         titleView = TextView(this)
-        titleView.text = "Home"
+        titleView.text = "HOME"
         titleView.setTextColor(Color.WHITE)
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.032f)
-        titleView.setTypeface(Typeface.DEFAULT_BOLD, Typeface.ITALIC)
-        titleView.setShadowLayer(10f, 0f, 3f, Color.BLACK)
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.042f)
+        titleView.typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        titleView.letterSpacing = 0.03f
+        titleView.setShadowLayer(14f, 0f, 4f, Color.BLACK)
         titleView.maxLines = 2
         titleView.ellipsize = TextUtils.TruncateAt.END
-        titleView.maxWidth = (screenW * 0.5f).toInt()
+        titleView.maxWidth = (screenW * 0.42f).toInt()
 
         descView = TextView(this)
-        descView.setTextColor(Color.argb(225, 255, 255, 255))
+        descView.setTextColor(Color.argb(230, 255, 255, 255))
         descView.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
         descView.setShadowLayer(8f, 0f, 2f, Color.BLACK)
         descView.maxLines = 3
@@ -183,11 +304,11 @@ class MainActivity : Activity() {
         heroBtn.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
         heroBtn.setTypeface(Typeface.DEFAULT_BOLD)
         val btnBg = GradientDrawable()
-        btnBg.cornerRadius = radius
-        btnBg.setColor(Color.argb(170, 255, 255, 255))
+        btnBg.cornerRadius = radius * 1.4f
+        btnBg.setColor(Color.argb(190, 255, 255, 255))
         heroBtn.background = btnBg
-        val bh = (screenW * 0.02f).toInt()
-        val bv = (screenW * 0.009f).toInt()
+        val bh = (screenW * 0.022f).toInt()
+        val bv = (screenW * 0.0095f).toInt()
         heroBtn.setPadding(bh, bv, bh, bv)
         heroBtn.isFocusable = true
         heroBtn.isClickable = true
@@ -196,52 +317,154 @@ class MainActivity : Activity() {
         heroBtn.setOnFocusChangeListener { v, focused ->
             val s = if (focused) 1.1f else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(150).start()
-            btnBg.setColor(if (focused) Color.WHITE else Color.argb(170, 255, 255, 255))
+            btnBg.setColor(if (focused) Color.WHITE else Color.argb(190, 255, 255, 255))
         }
         heroBtn.setOnClickListener { launchHero(currentItem) }
 
         val info = LinearLayout(this)
         info.orientation = LinearLayout.VERTICAL
-        info.addView(titleView)
-        val descLp = LinearLayout.LayoutParams((screenW * 0.4f).toInt(), WRAP)
+        info.addView(metaView)
+        val titleLp = LinearLayout.LayoutParams(WRAP, WRAP)
+        titleLp.topMargin = (screenW * 0.006f).toInt()
+        info.addView(titleView, titleLp)
+        val descLp = LinearLayout.LayoutParams((screenW * 0.38f).toInt(), WRAP)
         descLp.topMargin = (screenW * 0.008f).toInt()
         info.addView(descView, descLp)
         val btnLp = LinearLayout.LayoutParams(WRAP, WRAP)
-        btnLp.topMargin = (screenW * 0.014f).toInt()
+        btnLp.topMargin = (screenW * 0.016f).toInt()
         info.addView(heroBtn, btnLp)
         val infoLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
-        infoLp.setMargins(outer + pad, (screenH * 0.07f).toInt(), 0, 0)
+        infoLp.setMargins(outer + pad, (screenH * 0.12f).toInt(), 0, 0)
         root.addView(info, infoLp)
 
-        // Clock pill (top-right)
-        val clock = TextClock(this)
-        clock.format12Hour = "h:mm"
-        clock.format24Hour = "HH:mm"
-        clock.setTextColor(Color.WHITE)
-        clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
-        val pill = GradientDrawable()
-        pill.cornerRadius = 200f
-        pill.setColor(Color.argb(110, 30, 30, 40))
-        pill.setStroke(2, Color.argb(50, 255, 255, 255))
-        clock.background = pill
-        val ph = (screenW * 0.012f).toInt()
-        val pv = (screenW * 0.006f).toInt()
-        clock.setPadding(ph, pv, ph, pv)
-        val clockLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        clockLp.setMargins(0, (screenH * 0.05f).toInt(), outer + pad, 0)
-        root.addView(clock, clockLp)
+        // ---- 6. carousel dots (above the dock)
+        dots = LinearLayout(this)
+        dots.orientation = LinearLayout.HORIZONTAL
+        dots.gravity = Gravity.CENTER
+        val dotsLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        dotsLp.bottomMargin = bottomMargin + panelH + (extra * 0.6f).toInt()
+        root.addView(dots, dotsLp)
 
-        // App rows
+        // ---- 7. glass dock panel
+        val glass = FrameLayout(this)
+        glass.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, panelR)
+            }
+        }
+        glass.clipToOutline = true
+
+        blurImg = ImageView(this)
+        blurImg.alpha = 0f
+        blurImg.scaleType = ImageView.ScaleType.CENTER_CROP
+        val blurLp = FrameLayout.LayoutParams(screenW, screenH)
+        blurImg.layoutParams = blurLp
+        blurImg.translationX = -outer.toFloat()          // line the blur up with the hero image behind
+        blurImg.translationY = -panelTop.toFloat()
+        glass.addView(blurImg)
+
+        val dim = View(this)
+        dim.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(50, 0, 0, 0), Color.argb(125, 0, 0, 0))
+        )
+        glass.addView(dim, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val sheen = View(this)
+        sheen.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(75, 255, 255, 255), Color.argb(18, 255, 255, 255))
+        )
+        glass.addView(sheen, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val border = View(this)
+        val borderBg = GradientDrawable()
+        borderBg.cornerRadius = panelR
+        borderBg.setStroke(2, Color.argb(95, 255, 255, 255))
+        borderBg.setColor(Color.TRANSPARENT)
+        border.background = borderBg
+        glass.addView(border, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val highlight = View(this)
+        highlight.background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(Color.TRANSPARENT, Color.argb(175, 255, 255, 255), Color.TRANSPARENT)
+        )
+        val hlLp = FrameLayout.LayoutParams(
+            (panelW - 2 * panelR).toInt().coerceAtLeast(10), 2,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        )
+        hlLp.topMargin = 1
+        glass.addView(highlight, hlLp)
+
+        val glassLp = FrameLayout.LayoutParams(panelW, panelH, Gravity.BOTTOM or Gravity.START)
+        glassLp.setMargins(outer, 0, 0, bottomMargin)
+        root.addView(glass, glassLp)
+
+        // ---- 8. the dock row: ALL apps, scrolls sideways
+        val lm = object : LinearLayoutManager(this, RecyclerView.HORIZONTAL, false) {
+            // We centre the focused tile ourselves, so skip the default "just make it visible" scroll.
+            override fun requestChildRectangleOnScreen(
+                parent: RecyclerView,
+                child: View,
+                rect: Rect,
+                immediate: Boolean,
+                focusedChildVisible: Boolean
+            ): Boolean = false
+        }
         list = RecyclerView(this)
-        list.layoutManager = LinearLayoutManager(this)
+        list.layoutManager = lm
         list.clipChildren = false
         list.clipToPadding = false
-        list.setItemViewCacheSize(10)
-        list.adapter = RowAdapter(apps.chunked(6))
-        root.addView(
-            list,
-            FrameLayout.LayoutParams(MATCH, (screenH * 0.44f).toInt(), Gravity.BOTTOM)
+        list.setPadding(pad, 0, pad, 0)
+        list.setItemViewCacheSize(8)
+        list.adapter = DockAdapter(apps)
+        val listLp = FrameLayout.LayoutParams(
+            panelW, panelH + 2 * extra, Gravity.BOTTOM or Gravity.START
         )
+        listLp.setMargins(outer, 0, 0, bottomMargin - extra)
+        root.addView(list, listLp)
+
+        // ---- 9. top bar: default-home pill + clock
+        defaultPill = TextView(this)
+        defaultPill.text = "Set as default home"
+        defaultPill.setTextColor(Color.WHITE)
+        defaultPill.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        val pillBg = glassPill()
+        defaultPill.background = pillBg
+        val ph = (screenW * 0.014f).toInt()
+        val pv = (screenW * 0.007f).toInt()
+        defaultPill.setPadding(ph, pv, ph, pv)
+        defaultPill.isFocusable = true
+        defaultPill.isClickable = true
+        defaultPill.visibility = View.GONE
+        if (Build.VERSION.SDK_INT >= 26) defaultPill.defaultFocusHighlightEnabled = false
+        defaultPill.setOnFocusChangeListener { v, focused ->
+            val s = if (focused) 1.08f else 1f
+            v.animate().scaleX(s).scaleY(s).setDuration(150).start()
+            pillBg.setColor(if (focused) Color.argb(200, 255, 255, 255) else Color.argb(110, 30, 30, 40))
+            defaultPill.setTextColor(if (focused) Color.BLACK else Color.WHITE)
+        }
+        defaultPill.setOnClickListener { showDefaultHelp() }
+
+        val clock = TextClock(this)
+        clock.format12Hour = "EEE  h:mm"
+        clock.format24Hour = "EEE  HH:mm"
+        clock.setTextColor(Color.WHITE)
+        clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
+        clock.background = glassPill()
+        clock.setPadding(ph, pv, ph, pv)
+
+        val topBar = LinearLayout(this)
+        topBar.orientation = LinearLayout.HORIZONTAL
+        topBar.gravity = Gravity.CENTER_VERTICAL
+        topBar.addView(defaultPill)
+        val clockLp = LinearLayout.LayoutParams(WRAP, WRAP)
+        clockLp.leftMargin = (screenW * 0.012f).toInt()
+        topBar.addView(clock, clockLp)
+        val topLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
+        topLp.setMargins(0, (screenH * 0.05f).toInt(), outer + pad, 0)
+        root.addView(topBar, topLp)
 
         setContentView(root)
 
@@ -259,6 +482,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        defaultPill.visibility = if (isDefaultHome()) View.GONE else View.VISIBLE
         if (hasTvPermission()) loadHeroAsync()
     }
 
@@ -267,11 +491,59 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Home pressed while already here: jump back to the first app.
+        list.scrollToPosition(0)
+        list.post { list.getChildAt(0)?.requestFocus() }
+    }
+
     override fun onBackPressed() {
         // Launcher is the root screen: ignore Back.
     }
 
-    // ---------- permission + hero data ----------
+    // =====================================================================
+    // Default home helpers
+    // =====================================================================
+
+    private fun homeIntent(): Intent =
+        Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+
+    private fun isDefaultHome(): Boolean {
+        val ri = packageManager.resolveActivity(homeIntent(), PackageManager.MATCH_DEFAULT_ONLY)
+        return ri?.activityInfo?.packageName == packageName
+    }
+
+    private fun showDefaultHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Make this your default home")
+            .setMessage(
+                "1) Tap \"Open chooser\", pick this launcher and choose Always.\n\n" +
+                    "2) If your box just opens the old home screen, run this on a PC:\n" +
+                    "adb shell cmd package set-home-activity $packageName/.MainActivity"
+            )
+            .setPositiveButton("Open chooser") { _, _ ->
+                try {
+                    startActivity(homeIntent().addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    // ignore
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun glassPill(): GradientDrawable {
+        val g = GradientDrawable()
+        g.cornerRadius = 200f
+        g.setColor(Color.argb(110, 30, 30, 40))
+        g.setStroke(2, Color.argb(60, 255, 255, 255))
+        return g
+    }
+
+    // =====================================================================
+    // Hero data (TV provider)
+    // =====================================================================
 
     private fun hasTvPermission(): Boolean =
         Build.VERSION.SDK_INT < 23 ||
@@ -297,7 +569,6 @@ class MainActivity : Activity() {
         return if (i >= 0 && !isNull(i)) getInt(i) else -1
     }
 
-    /** Reads preview ("latest") and watch-next ("continue") programs published by OTT apps. */
     private fun queryHero(): Map<String, List<HeroItem>> {
         val out = LinkedHashMap<String, MutableList<HeroItem>>()
         if (Build.VERSION.SDK_INT < 26) return out
@@ -334,7 +605,7 @@ class MainActivity : Activity() {
                     }
                 }
             } catch (e: Exception) {
-                // No access or provider missing: ignore and fall back to gradient.
+                // No access: fall back to the aurora background.
             }
         }
         return out
@@ -352,7 +623,9 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- hero display ----------
+    // =====================================================================
+    // Hero display
+    // =====================================================================
 
     private fun showHeroFor(app: AppItem) {
         handler.removeCallbacks(rotator)
@@ -361,18 +634,21 @@ class MainActivity : Activity() {
         if (items.isEmpty()) {
             currentItem = null
             heroToken++
-            titleView.text = app.label
+            metaView.visibility = View.GONE
+            titleView.text = app.label.uppercase()
             heroBtn.visibility = View.GONE
-            heroImg.animate().alpha(0f).setDuration(250).start()
-            if (hasTvPermission()) {
-                descView.visibility = View.GONE
-            } else {
-                descView.text = "Hero art needs: adb shell pm grant $packageName $TV_PERM"
+            updateDots(0, 0)
+            clearHeroImage()
+            if (app.pkg != SETTINGS_PKG && !hasTvPermission()) {
+                descView.text =
+                    "To show artwork from your apps, run on a PC: adb shell pm grant $packageName $TV_PERM"
                 descView.visibility = View.VISIBLE
+            } else {
+                descView.visibility = View.GONE
             }
             return
         }
-        showItem(app, items[0])
+        showItem(app, items[0], 0, items.size)
         if (items.size > 1) handler.postDelayed(rotator, 7000)
     }
 
@@ -382,42 +658,96 @@ class MainActivity : Activity() {
         if (items.size < 2) return
         if (!heroBtn.hasFocus()) {
             heroIndex = (heroIndex + 1) % items.size
-            showItem(app, items[heroIndex])
+            showItem(app, items[heroIndex], heroIndex, items.size)
         }
         handler.postDelayed(rotator, 7000)
     }
 
-    private fun showItem(app: AppItem, item: HeroItem) {
+    private fun clearHeroImage() {
+        kenBurns?.cancel()
+        heroImg.animate().alpha(0f).setDuration(250).start()
+        blurImg.animate().alpha(0f).setDuration(250).start()
+    }
+
+    private fun showItem(app: AppItem, item: HeroItem, index: Int, total: Int) {
         currentItem = item
-        titleView.text = item.title ?: app.label
+        metaView.text = "FROM ${app.label.uppercase()}"
+        metaView.setTextColor(withValue(app.tint, 1f, 0.45f))
+        metaView.visibility = View.VISIBLE
+        titleView.text = (item.title ?: app.label).uppercase()
         descView.text = item.desc.orEmpty()
         descView.visibility = if (item.desc.isNullOrBlank()) View.GONE else View.VISIBLE
+        heroBtn.text = "Open in ${app.label}"
         heroBtn.visibility = View.VISIBLE
+        updateDots(total, index)
+
         val token = ++heroToken
         val img = item.image
         if (img == null) {
-            heroImg.animate().alpha(0f).setDuration(250).start()
+            clearHeroImage()
             return
         }
         loadBitmap(img) { bmp ->
             if (token != heroToken) return@loadBitmap
             if (bmp == null) {
-                heroImg.animate().alpha(0f).setDuration(250).start()
+                clearHeroImage()
                 return@loadBitmap
             }
             heroImg.animate().alpha(0f).setDuration(180).withEndAction {
                 if (token == heroToken) {
                     val wide = bmp.width.toFloat() / bmp.height.toFloat() >= 1.4f
-                    heroImg.scaleType =
-                        if (wide) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_END
+                    val st = if (wide) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_END
+                    heroImg.scaleType = st
                     heroImg.setImageBitmap(bmp)
-                    heroImg.animate().alpha(1f).setDuration(350).start()
+                    blurImg.scaleType = st
+                    blurImg.setImageBitmap(makeBlur(bmp))
+                    blurImg.animate().alpha(1f).setDuration(400).start()
+                    heroImg.animate().alpha(1f).setDuration(400).start()
+                    startKenBurns()
                 }
             }.start()
         }
     }
 
-    // ---------- image loading ----------
+    private fun makeBlur(src: Bitmap): Bitmap {
+        val w = 48
+        val h = (w * src.height.toFloat() / src.width.toFloat()).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(src, w, h, true)
+    }
+
+    private fun startKenBurns() {
+        kenBurns?.cancel()
+        heroImg.scaleX = 1f
+        heroImg.scaleY = 1f
+        val sx = ObjectAnimator.ofFloat(heroImg, View.SCALE_X, 1f, 1.07f)
+        val sy = ObjectAnimator.ofFloat(heroImg, View.SCALE_Y, 1f, 1.07f)
+        val set = AnimatorSet()
+        set.playTogether(sx, sy)
+        set.duration = 12000
+        set.interpolator = LinearInterpolator()
+        set.start()
+        kenBurns = set
+    }
+
+    private fun updateDots(count: Int, index: Int) {
+        dots.removeAllViews()
+        if (count < 2) return
+        val d = (screenW * 0.0055f).toInt().coerceAtLeast(6)
+        for (i in 0 until count) {
+            val v = View(this)
+            val bg = GradientDrawable()
+            bg.cornerRadius = d.toFloat()
+            bg.setColor(if (i == index) Color.WHITE else Color.argb(110, 255, 255, 255))
+            v.background = bg
+            val lp = LinearLayout.LayoutParams(if (i == index) d * 3 else d, d)
+            lp.setMargins(d / 2, 0, d / 2, 0)
+            dots.addView(v, lp)
+        }
+    }
+
+    // =====================================================================
+    // Image loading
+    // =====================================================================
 
     private fun loadBitmap(uriStr: String, cb: (Bitmap?) -> Unit) {
         val cached = cache.get(uriStr)
@@ -460,12 +790,20 @@ class MainActivity : Activity() {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
 
-    // ---------- apps ----------
+    // =====================================================================
+    // Apps
+    // =====================================================================
+
+    private fun prio(a: AppItem): Int {
+        val s = (a.pkg + " " + a.label).lowercase()
+        val i = priorityKeys.indexOfFirst { s.contains(it) }
+        return if (i >= 0) i else 100
+    }
 
     private fun loadApps(): List<AppItem> {
         val pm = packageManager
         val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
-        return pm.queryIntentActivities(query, 0)
+        val apps = pm.queryIntentActivities(query, 0)
             .filter { it.activityInfo.packageName != packageName }
             .map { ri ->
                 val banner = ri.activityInfo.loadBanner(pm)
@@ -479,7 +817,14 @@ class MainActivity : Activity() {
                 )
             }
             .distinctBy { it.pkg }
-            .sortedBy { it.label.lowercase() }
+            .sortedWith(compareBy<AppItem>({ prio(it) }, { it.label.lowercase() }))
+            .toMutableList()
+
+        val gear = getDrawable(android.R.drawable.ic_menu_preferences)
+        if (gear != null) {
+            apps.add(AppItem("Settings", SETTINGS_PKG, gear, false, Color.parseColor("#4a4f5e")))
+        }
+        return apps
     }
 
     private fun dominantColor(d: Drawable): Int {
@@ -512,7 +857,23 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- colors ----------
+    private fun launchApp(app: AppItem) {
+        try {
+            if (app.pkg == SETTINGS_PKG) {
+                startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } else {
+                val i = packageManager.getLeanbackLaunchIntentForPackage(app.pkg)
+                    ?: packageManager.getLaunchIntentForPackage(app.pkg)
+                if (i != null) startActivity(i)
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+    }
+
+    // =====================================================================
+    // Colors
+    // =====================================================================
 
     private fun withValue(color: Int, v: Float, satBoost: Float = 1f): Int {
         val hsv = FloatArray(3)
@@ -522,16 +883,14 @@ class MainActivity : Activity() {
         return Color.HSVToColor(hsv)
     }
 
-    private fun applyTint(c: Int) {
-        heroBg.setColors(intArrayOf(withValue(c, 0.60f, 1.1f), withValue(c, 0.22f), Color.BLACK))
-    }
-
     private fun setTint(target: Int) {
         if (target == currentTint) return
         tintAnimator?.cancel()
         val anim = ValueAnimator.ofObject(ArgbEvaluator(), currentTint, target)
         anim.duration = 450
-        anim.addUpdateListener { a -> applyTint(a.animatedValue as Int) }
+        anim.addUpdateListener { a ->
+            aurora.setTint(withValue(a.animatedValue as Int, 0.75f, 1.15f))
+        }
         anim.start()
         tintAnimator = anim
         currentTint = target
@@ -543,7 +902,15 @@ class MainActivity : Activity() {
         showHeroFor(app)
     }
 
-    // ---------- tiles ----------
+    // =====================================================================
+    // Dock tiles
+    // =====================================================================
+
+    private fun centerOn(v: View) {
+        val slot = v.parent as? View ?: return
+        val dx = (slot.left + slot.width / 2) - list.width / 2
+        if (dx != 0) list.smoothScrollBy(dx, 0)
+    }
 
     private fun buildTile(app: AppItem): View {
         val r = radius
@@ -600,9 +967,6 @@ class MainActivity : Activity() {
         col.clipChildren = false
         col.isFocusable = true
         col.isClickable = true
-        val colLp = LinearLayout.LayoutParams(tileW, WRAP)
-        colLp.setMargins(gap / 2, 0, gap / 2, 0)
-        col.layoutParams = colLp
         col.addView(card)
         col.addView(label)
         col.pivotX = tileW / 2f
@@ -612,55 +976,37 @@ class MainActivity : Activity() {
         }
 
         col.setOnFocusChangeListener { v, focused ->
-            val s = if (focused) 1.1f else 1f
+            val s = if (focused) 1.12f else 1f
             v.animate().scaleX(s).scaleY(s)
                 .translationZ(if (focused) 20f else 0f)
                 .setDuration(160).start()
             label.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
-            if (focused) onAppFocused(app)
+            if (focused) {
+                centerOn(v)
+                onAppFocused(app)
+            }
         }
-        col.setOnClickListener {
-            packageManager.getLeanbackLaunchIntentForPackage(app.pkg)?.let { startActivity(it) }
-        }
+        col.setOnClickListener { launchApp(app) }
         return col
     }
 
-    inner class RowAdapter(private val rows: List<List<AppItem>>) :
+    inner class DockAdapter(private val apps: List<AppItem>) :
         RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
-        override fun getItemCount() = rows.size
-
-        override fun getItemViewType(position: Int) = if (position == 0) 0 else 1
+        override fun getItemCount() = apps.size
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-            val row = LinearLayout(parent.context)
-            row.orientation = LinearLayout.HORIZONTAL
-            row.clipChildren = false
-            row.clipToPadding = false
-            val rowGap = (screenW * 0.008f).toInt()
-            val lp = RecyclerView.LayoutParams(MATCH, WRAP)
-            lp.setMargins(outer, rowGap, outer, rowGap)
-            row.layoutParams = lp
-            if (viewType == 0) {
-                val v = (pad * 0.8f).toInt()
-                row.setPadding(pad, v, pad, v)
-                val glass = GradientDrawable()
-                glass.cornerRadius = radius * 1.6f
-                glass.setColor(Color.argb(110, 20, 20, 28))
-                glass.setStroke(2, Color.argb(45, 255, 255, 255))
-                row.background = glass
-            } else {
-                val v = (pad * 0.5f).toInt()
-                row.setPadding(pad, v, pad, v)
-            }
-            return object : RecyclerView.ViewHolder(row) {}
+            val slot = FrameLayout(parent.context)
+            slot.layoutParams = RecyclerView.LayoutParams(tileW + gap, MATCH)
+            slot.clipChildren = false
+            return object : RecyclerView.ViewHolder(slot) {}
         }
 
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-            val row = holder.itemView as LinearLayout
-            row.removeAllViews()
-            rows[position].forEach { row.addView(buildTile(it)) }
+            val slot = holder.itemView as FrameLayout
+            slot.removeAllViews()
+            slot.addView(buildTile(apps[position]), FrameLayout.LayoutParams(tileW, WRAP, Gravity.CENTER))
         }
     }
 }
