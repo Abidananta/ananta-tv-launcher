@@ -201,14 +201,12 @@ class GearDrawable(private val color: Int = Color.WHITE) : Drawable() {
 class WifiDrawable(private val color: Int = Color.WHITE) : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
-    var level = 3
-        private set
-    var connected = true
-        private set
+    private var bars = 3
+    private var online = true
 
-    fun update(level: Int, connected: Boolean) {
-        this.level = level
-        this.connected = connected
+    fun update(bars: Int, online: Boolean) {
+        this.bars = bars
+        this.online = online
         invalidateSelf()
     }
 
@@ -222,7 +220,7 @@ class WifiDrawable(private val color: Int = Color.WHITE) : Drawable() {
         paint.strokeWidth = w * 0.10f
         val radii = floatArrayOf(w * 0.27f, w * 0.50f, w * 0.73f)
         for (i in 0 until 3) {
-            val lit = connected && i < level
+            val lit = online && i < bars
             paint.style = Paint.Style.STROKE
             paint.color = color
             paint.alpha = if (lit) 255 else 70
@@ -231,9 +229,9 @@ class WifiDrawable(private val color: Int = Color.WHITE) : Drawable() {
         }
         paint.style = Paint.Style.FILL
         paint.color = color
-        paint.alpha = if (connected) 255 else 70
+        paint.alpha = if (online) 255 else 70
         canvas.drawCircle(cx, cy, w * 0.075f, paint)
-        if (!connected) {
+        if (!online) {
             paint.style = Paint.Style.STROKE
             paint.color = color
             paint.alpha = 255
