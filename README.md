@@ -30,7 +30,7 @@ Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cin
 5. Open **Build Ananta TV Launcher APK**, select the latest successful run, and download artifact `Ananta-TV-debug-apk`.
 6. Extract the ZIP artifact. The APK inside is `app-debug.apk`.
 
-The workflow uses GitHub-hosted Ubuntu, Java 17 and Gradle 8.9. It does not require Android Studio.
+The workflow uses GitHub-hosted Ubuntu, Java 17 and Gradle 8.9. It installs Android platform 35 and Build Tools 35.0.0. It intentionally does not request the retired SDK package named `tools` (which causes `Warning: Failed to find package 'tools'` on current SDK repositories). It does not require Android Studio.
 
 ## Install on Xiaomi Mi Box 4
 
@@ -64,3 +64,8 @@ The workflow uses GitHub-hosted Ubuntu, Java 17 and Gradle 8.9. It does not requ
 - Target SDK: 28 for broad Android TV compatibility in this starter. Review target SDK and package visibility behavior before a Play Store release.
 - The manifest declares `HOME`, `DEFAULT` and `LEANBACK_LAUNCHER`.
 - No credentials, signing keys or secrets are needed to build the debug APK.
+
+
+## Fix for the SDK setup workflow error
+
+If your previous Actions run stopped at **Set up Android SDK** with `Warning: Failed to find package 'tools'`, upload this fixed project version. The workflow now asks the setup action for `platform-tools` only, then installs the exact Android platform and build-tools packages separately.
