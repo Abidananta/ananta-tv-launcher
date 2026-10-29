@@ -110,3 +110,13 @@ The workflow uses GitHub-hosted Ubuntu, Java 17 and Gradle 8.9. It installs Andr
 ## Fix for the SDK setup workflow error
 
 If your previous Actions run stopped at **Set up Android SDK** with `Warning: Failed to find package 'tools'`, upload this fixed project version. The workflow now asks the setup action for `platform-tools` only, then installs the exact Android platform and build-tools packages separately.
+
+## Top-left menu (v10)
+- **Home** (house icon), **All Apps** (grid icon), **Movies**, **Series**.
+- All Apps lists every installed app. Movies / Series show a curated best-of list; posters come from the public iTunes Search API (needs internet, no key). OK opens the trailer search in YouTube.
+- Back returns Home. Edit the `MOVIES` / `SERIES` lists in `MainActivity.kt` to change the titles.
+
+## v11
+- **Apps for you** row under Recommended: Play Store suggestions (apps not installed yet). OK opens the Play Store page to install. Edit `STORE_CATALOG` in `MainActivity.kt` to change the list.
+- Dock now loops: Right on the last app jumps to the first (Left on the first jumps to the last) instead of leaving the dock.
+- YouTube / YouTube Music hero follows what you played (Watch Next, most recent first), then the app's own picks.

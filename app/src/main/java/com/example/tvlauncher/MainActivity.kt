@@ -513,6 +513,7 @@ class MainActivity : Activity() {
     private val R_RECENT = 1
     private val R_APPS = 2
     private val R_REC = 3
+    private val R_STORE = 4
 
     /** Display order inside the dock (first match wins). */
     private val priorityKeys = listOf(
@@ -599,10 +600,10 @@ class MainActivity : Activity() {
     }
     private lateinit var dots: LinearLayout
 
-    private val rowRv = arrayOfNulls<RecyclerView>(4)
-    private val rowSection = arrayOfNulls<View>(4)
-    private val rowEmpty = arrayOfNulls<TextView>(4)
-    private val lastPos = IntArray(4)
+    private val rowRv = arrayOfNulls<RecyclerView>(5)
+    private val rowSection = arrayOfNulls<View>(5)
+    private val rowEmpty = arrayOfNulls<TextView>(5)
+    private val lastPos = IntArray(5)
     private lateinit var dockRv: RecyclerView
     private lateinit var appsRv: RecyclerView
     private lateinit var dockAdapter: TileAdapter
@@ -662,6 +663,18 @@ class MainActivity : Activity() {
     private lateinit var settingsList: LinearLayout
     private val settingsStack = ArrayList<Page>()
     private var settingsOpen = false
+
+    // ---- top-left nav (Home / All Apps / Movies / Series) + full-screen pages
+    data class Poster(val title: String, val year: String, val genre: String)
+    private lateinit var pageLayer: FrameLayout
+    private lateinit var pageTitle: TextView
+    private lateinit var pageSub: TextView
+    private lateinit var pageRv: RecyclerView
+    private var pageOpen = false
+    private var navSelected = 0
+    private val navViews = ArrayList<View>()
+    private val navPaint = ArrayList<(Boolean) -> Unit>()
+    private val posterUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     private val io = Executors.newFixedThreadPool(3)
     private val failed = HashSet<String>()
@@ -803,15 +816,6 @@ class MainActivity : Activity() {
         // ---- 5. brand mark + hero text block
         heroTextLayer = FrameLayout(this)
         heroTextLayer.clipChildren = false
-        val brand = TextView(this)
-        brand.text = "ANANTA  TV"
-        brand.setTextColor(Color.argb(210, 255, 255, 255))
-        brand.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
-        brand.setTypeface(Typeface.DEFAULT_BOLD)
-        brand.letterSpacing = 0.35f
-        val brandMarkLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
-        brandMarkLp.setMargins(tileStartX, (screenH * 0.055f).toInt(), 0, 0)
-        heroTextLayer.addView(brand, brandMarkLp)
 
         metaView = TextView(this)
         metaView.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
@@ -886,7 +890,7 @@ class MainActivity : Activity() {
         btnLp.topMargin = (screenW * 0.014f).toInt()
         info.addView(heroBtn, btnLp)
         val infoLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
-        infoLp.setMargins(tileStartX - infoPad, (screenH * 0.105f).toInt() - infoPad, 0, 0)
+        infoLp.setMargins(tileStartX - infoPad, (screenH * 0.155f).toInt() - infoPad, 0, 0)
         heroTextLayer.addView(info, infoLp)
         root.addView(heroTextLayer, FrameLayout.LayoutParams(MATCH, MATCH))
 
@@ -1018,8 +1022,18 @@ class MainActivity : Activity() {
             ),
             LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
         )
+        storeItems.addAll(computeStore())
+        storeAdapter = StoreAdapter()
+        content.addView(
+            makeSection(
+                R_STORE, "APPS FOR YOU", "Install from Google Play", appsRvH, storeAdapter, tileStartX,
+                "No suggestions right now."
+            ),
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
+        )
         updateEmpty(R_RECENT)
         updateEmpty(R_REC)
+        updateEmpty(R_STORE)
 
         scroll = HomeScroll(this)
         scroll.isFocusable = false
@@ -1029,6 +1043,8 @@ class MainActivity : Activity() {
         scroll.clipToPadding = false
         scroll.addView(content, FrameLayout.LayoutParams(MATCH, WRAP))
         root.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
+        pageLayer = buildPageLayer(tileStartX)
+        root.addView(pageLayer, FrameLayout.LayoutParams(MATCH, MATCH))
         scroll.viewTreeObserver.addOnScrollChangedListener { applyScrollFx(scroll.scrollY) }
 
         // ---- 9. top bar (Apple TV style): wifi, time, settings, profile.
@@ -1073,6 +1089,23 @@ class MainActivity : Activity() {
         val topLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
         topLp.setMargins(0, topMarginPx, tileStartX, 0)
         root.addView(topBar, topLp)
+
+        // ---- top-left nav pill: same glass look as the Wi-Fi / Settings pill on the other side
+        val navBar = LinearLayout(this)
+        navBar.orientation = LinearLayout.HORIZONTAL
+        navBar.gravity = Gravity.CENTER_VERTICAL
+        navBar.clipChildren = false
+        navBar.clipToPadding = false
+        navBar.setPadding(bp * 2, bp, bp * 2, bp)
+        navBar.background = glassPill()
+        navBar.addView(navButton(0, GlyphDrawable(GlyphDrawable.HOME), null, iconBox, iconPad) { goHome() }, LinearLayout.LayoutParams(iconBox, iconBox))
+        navBar.addView(navButton(1, GlyphDrawable(GlyphDrawable.GRID), null, iconBox, iconPad) { openPage(PAGE_APPS) }, LinearLayout.LayoutParams(iconBox, iconBox))
+        navBar.addView(navButton(2, null, "Movies", iconBox, iconPad) { openPage(PAGE_MOVIES) }, LinearLayout.LayoutParams(WRAP, iconBox))
+        navBar.addView(navButton(3, null, "Series", iconBox, iconPad) { openPage(PAGE_SERIES) }, LinearLayout.LayoutParams(WRAP, iconBox))
+        val navLp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
+        navLp.setMargins(tileStartX, topMarginPx, 0, 0)
+        root.addView(navBar, navLp)
+        setNavSelected(0)
 
         // ---- 10. overlays: Wi-Fi dropdown + Apple-TV-style Settings
         wifiPanel = buildWifiPanel(topMarginPx + iconBox + 2 * bp + (screenH * 0.012f).toInt(), tileStartX)
@@ -1227,6 +1260,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         failed.clear()
+        if (::storeAdapter.isInitialized) refreshStore()
         refreshAccount()
         handler.removeCallbacks(statusTick)
         statusTick.run()
@@ -1257,6 +1291,8 @@ class MainActivity : Activity() {
         // Home pressed while already here: close any panel and jump back to the first dock app.
         if (wifiOpen) closeWifiPanel(false)
         if (settingsOpen) closeSettings(false)
+        if (pageOpen) closePage()
+        setNavSelected(0)
         lastPos.fill(0)
         dockRv.scrollToPosition(0)
         appsRv.scrollToPosition(0)
@@ -1269,6 +1305,7 @@ class MainActivity : Activity() {
         // Launcher is the root screen: Back only closes the Wi-Fi dropdown / Settings.
         if (settingsOpen) settingsBack()
         else if (wifiOpen) closeWifiPanel(true)
+        else if (pageOpen) goHome()
     }
 
     private fun glassPill(): GradientDrawable {
@@ -1396,6 +1433,24 @@ class MainActivity : Activity() {
         }
         recent.sortByDescending { it.engaged }
         val recentOut = ArrayList<HeroItem>(recent.take(20))
+
+        // YouTube / YouTube Music hero follows what the user actually played: their Watch Next
+        // (most recently played first), then the apps' own picks.
+        val ytGroup = listOf("com.google.android.youtube.tvmusic", "com.google.android.youtube.tv")
+        for (ytPkg in ytGroup) {
+            if (!hero.containsKey(ytPkg) && recent.none { it.pkg == ytPkg }) continue
+            val merged = ArrayList<HeroItem>()
+            fun addAll(src: List<HeroItem>) {
+                for (it2 in src) {
+                    if (merged.size >= 10) return
+                    if (merged.none { m -> m.images[0] == it2.images[0] }) merged.add(it2)
+                }
+            }
+            addAll(recent.filter { it.pkg == ytPkg }.take(5))
+            addAll(hero[ytPkg].orEmpty())
+            for (other in ytGroup) if (other != ytPkg) addAll(recent.filter { it.pkg == other }.take(3) + hero[other].orEmpty())
+            if (merged.isNotEmpty()) hero[ytPkg] = merged
+        }
 
         // Recommended: interleave the apps so one app doesn't fill the whole row
         val seenRecent = HashSet<String>()
@@ -1856,6 +1911,7 @@ class MainActivity : Activity() {
         R_DOCK -> dockApps.size
         R_RECENT -> recentItems.size
         R_APPS -> gridApps.size
+        R_STORE -> storeItems.size
         else -> recItems.size
     }
 
@@ -1883,7 +1939,7 @@ class MainActivity : Activity() {
     /** D-pad up/down between rows (skips empty rows). Down at the very bottom is swallowed. */
     private fun moveVertical(from: Int, dir: Int): Boolean {
         var i = from + dir
-        while (i in 0..3) {
+        while (i in 0..4) {
             val rv = rowRv[i]
             if (rv != null && rowCount(i) > 0) {
                 focusPosition(rv, lastPos[i].coerceIn(0, rowCount(i) - 1))
@@ -2143,7 +2199,9 @@ class MainActivity : Activity() {
             label.animate().alpha(if (focused) 1f else restingLabel).setDuration(160).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             glow.animate().alpha(if (focused) 1f else 0f).setDuration(220).start()
-            if (focused) {
+            if (focused && row < 0) {
+                setTint(app.tint)
+            } else if (focused) {
                 val list = if (inDock) dockApps else gridApps
                 lastPos[row] = list.indexOfFirst { it.pkg == app.pkg }.coerceAtLeast(0)
                 rowRv[row]?.let { centerOn(it, v) }
@@ -2152,15 +2210,30 @@ class MainActivity : Activity() {
             }
         }
         col.setOnClickListener { launchApp(app) }
-        col.setOnLongClickListener {
-            toggleDock(app)
-            true
-        }
-        col.setOnKeyListener { _, keyCode, ev ->
-            if (ev.action != KeyEvent.ACTION_DOWN) false
-            else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moveVertical(row, 1)
-            else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) moveVertical(row, -1)
-            else false
+        if (row >= 0) {
+            col.setOnLongClickListener {
+                toggleDock(app)
+                true
+            }
+            col.setOnKeyListener { _, keyCode, ev ->
+                if (ev.action != KeyEvent.ACTION_DOWN) false
+                else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moveVertical(row, 1)
+                else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) moveVertical(row, -1)
+                else if (inDock && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    // End of the dock: loop back to the first app instead of leaving the dock.
+                    val i = dockApps.indexOfFirst { it.pkg == app.pkg }
+                    if (i == dockApps.size - 1) {
+                        focusPosition(dockRv, 0)
+                        true
+                    } else false
+                } else if (inDock && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                    val i = dockApps.indexOfFirst { it.pkg == app.pkg }
+                    if (i == 0) {
+                        focusPosition(dockRv, dockApps.size - 1)
+                        true
+                    } else false
+                } else false
+            }
         }
         return col
     }
@@ -2325,6 +2398,621 @@ class MainActivity : Activity() {
             val lp = FrameLayout.LayoutParams(cardW, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             lp.topMargin = (gap * 0.6f).toInt()
             slot.addView(buildCard(items[position], row, position), lp)
+        }
+    }
+
+    // =====================================================================
+    // "Apps for you": Play Store suggestions that are not installed yet
+    // =====================================================================
+
+    data class StoreApp(val label: String, val pkg: String, val domain: String, val color: Int)
+
+    private val STORE_CATALOG = listOf(
+        StoreApp("Netflix", "com.netflix.ninja", "netflix.com", Color.parseColor("#E50914")),
+        StoreApp("YouTube Music", "com.google.android.youtube.tvmusic", "music.youtube.com", Color.parseColor("#FF0033")),
+        StoreApp("Prime Video", "com.amazon.amazonvideo.livingroom", "primevideo.com", Color.parseColor("#00A8E1")),
+        StoreApp("Disney+", "com.disney.disneyplus", "disneyplus.com", Color.parseColor("#113CCF")),
+        StoreApp("Disney+ Hotstar", "in.startv.hotstar", "hotstar.com", Color.parseColor("#1F80E0")),
+        StoreApp("Max", "com.wbd.stream", "max.com", Color.parseColor("#002BE7")),
+        StoreApp("Apple TV", "com.apple.atve.androidtv.appletv", "tv.apple.com", Color.parseColor("#3A3A3C")),
+        StoreApp("Spotify", "com.spotify.tv.android", "spotify.com", Color.parseColor("#1DB954")),
+        StoreApp("Crunchyroll", "com.crunchyroll.crunchyroid", "crunchyroll.com", Color.parseColor("#F47521")),
+        StoreApp("MX Player", "com.mxtech.videoplayer.ad", "mxplayer.in", Color.parseColor("#2196F3")),
+        StoreApp("Plex", "com.plexapp.android", "plex.tv", Color.parseColor("#E5A00D")),
+        StoreApp("Twitch", "tv.twitch.android.app", "twitch.tv", Color.parseColor("#9146FF")),
+        StoreApp("Tubi", "com.tubitv", "tubitv.com", Color.parseColor("#FA382F")),
+        StoreApp("Pluto TV", "tv.pluto.android", "pluto.tv", Color.parseColor("#5B4FE9")),
+        StoreApp("VLC", "org.videolan.vlc", "videolan.org", Color.parseColor("#FF8800")),
+        StoreApp("Kodi", "org.xbmc.kodi", "kodi.tv", Color.parseColor("#17B2E7")),
+        StoreApp("Downloader", "com.esaba.downloader", "", Color.parseColor("#3F51B5")),
+        StoreApp("Send Files to TV", "com.yablio.sendfilestotv", "", Color.parseColor("#009688")),
+        StoreApp("Aptoide TV", "cm.aptoide.pt", "aptoide.com", Color.parseColor("#FE6446"))
+    )
+
+    private val storeItems = ArrayList<StoreApp>()
+    private lateinit var storeAdapter: StoreAdapter
+
+    private fun isInstalled(pkg: String): Boolean = try {
+        packageManager.getPackageInfo(pkg, 0)
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun computeStore(): List<StoreApp> = STORE_CATALOG.filter { !isInstalled(it.pkg) }.take(16)
+
+    private fun refreshStore() {
+        val fresh = computeStore()
+        if (fresh.map { it.pkg } == storeItems.map { it.pkg }) return
+        storeItems.clear()
+        storeItems.addAll(fresh)
+        storeAdapter.notifyDataSetChanged()
+        updateEmpty(R_STORE)
+    }
+
+    private fun openStore(pkg: String) {
+        try {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg"))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            i.setPackage("com.android.vending")
+            startActivity(i)
+        } catch (e: Exception) {
+            try {
+                val i = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg"))
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(i)
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Google Play Store not found", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    inner class StoreAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        override fun getItemCount() = storeItems.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val slot = FrameLayout(parent.context)
+            slot.layoutParams = RecyclerView.LayoutParams(slotW, MATCH)
+            slot.clipChildren = false
+            return object : RecyclerView.ViewHolder(slot) {}
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            val slot = holder.itemView as FrameLayout
+            slot.removeAllViews()
+            val lp = FrameLayout.LayoutParams(tileW, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            lp.topMargin = (gap * 0.6f).toInt()
+            slot.addView(buildStoreTile(storeItems[position], position), lp)
+        }
+    }
+
+    private fun buildStoreTile(a: StoreApp, position: Int): View {
+        val r = radius
+        val card = FrameLayout(this)
+        card.layoutParams = FrameLayout.LayoutParams(tileW, tileH)
+        val cardBg = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(withValue(a.color, 0.62f, 1.1f), withValue(a.color, 0.24f, 1.1f))
+        )
+        cardBg.cornerRadius = r
+        card.background = cardBg
+        card.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, r)
+            }
+        }
+        card.clipToOutline = true
+
+        // logo on a white rounded plate (favicons come with all kinds of backgrounds)
+        val plateS = (tileH * 0.50f).toInt()
+        val plate = FrameLayout(this)
+        val plateBg = GradientDrawable()
+        plateBg.cornerRadius = plateS * 0.24f
+        plateBg.setColor(Color.WHITE)
+        plate.background = plateBg
+        val initial = TextView(this)
+        initial.text = a.label.take(1)
+        initial.setTextColor(a.color)
+        initial.setTextSize(TypedValue.COMPLEX_UNIT_PX, plateS * 0.55f)
+        initial.setTypeface(Typeface.DEFAULT_BOLD)
+        initial.gravity = Gravity.CENTER
+        plate.addView(initial, FrameLayout.LayoutParams(MATCH, MATCH))
+        val logo = ImageView(this)
+        logo.scaleType = ImageView.ScaleType.FIT_CENTER
+        logo.alpha = 0f
+        val lp2 = (plateS * 0.14f).toInt()
+        logo.setPadding(lp2, lp2, lp2, lp2)
+        plate.addView(logo, FrameLayout.LayoutParams(MATCH, MATCH))
+        if (a.domain.isNotEmpty()) {
+            loadInto(logo, listOf("https://www.google.com/s2/favicons?domain=${a.domain}&sz=128"), 128) {
+                initial.visibility = View.GONE
+                logo.animate().alpha(1f).setDuration(200).start()
+            }
+        }
+        val plateLp = FrameLayout.LayoutParams(plateS, plateS, Gravity.CENTER_HORIZONTAL or Gravity.TOP)
+        plateLp.topMargin = (tileH * 0.10f).toInt()
+        card.addView(plate, plateLp)
+
+        val gloss = View(this)
+        gloss.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(46, 255, 255, 255), Color.TRANSPARENT)
+        )
+        card.addView(gloss, FrameLayout.LayoutParams(MATCH, tileH / 2, Gravity.TOP))
+
+        // "Install" pill
+        val pill = TextView(this)
+        pill.text = "Install"
+        pill.setTextColor(Color.WHITE)
+        pill.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0082f)
+        pill.setTypeface(Typeface.DEFAULT_BOLD)
+        pill.gravity = Gravity.CENTER
+        val pillBg = GradientDrawable()
+        pillBg.cornerRadius = 100f
+        pillBg.setColor(Color.argb(150, 0, 0, 0))
+        pill.background = pillBg
+        val pillH = (tileH * 0.20f).toInt()
+        val pillLp = FrameLayout.LayoutParams((tileW * 0.34f).toInt(), pillH, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        pillLp.bottomMargin = (tileH * 0.07f).toInt()
+        card.addView(pill, pillLp)
+
+        val ring = View(this)
+        val ringBg = GradientDrawable()
+        ringBg.cornerRadius = r
+        ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
+        ringBg.setColor(Color.TRANSPARENT)
+        ring.background = ringBg
+        ring.alpha = 0f
+        card.addView(ring, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val label = TextView(this)
+        label.text = a.label
+        label.setTextColor(Color.WHITE)
+        label.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        label.gravity = Gravity.CENTER
+        label.maxLines = 1
+        label.ellipsize = TextUtils.TruncateAt.END
+        label.setPadding(0, (screenW * 0.006f).toInt(), 0, 0)
+        label.alpha = 0.72f
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.clipChildren = false
+        col.isFocusable = true
+        col.isClickable = true
+        col.addView(card, LinearLayout.LayoutParams(tileW, tileH))
+        col.addView(label, LinearLayout.LayoutParams(tileW, WRAP))
+        col.pivotX = tileW / 2f
+        col.pivotY = tileH / 2f
+        if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
+        col.setOnFocusChangeListener { v, focused ->
+            val sc = if (focused) 1.12f else 1f
+            v.animate().scaleX(sc).scaleY(sc).setDuration(160).start()
+            (v.parent as? View)?.translationZ = if (focused) 20f else 0f
+            label.animate().alpha(if (focused) 1f else 0.72f).setDuration(160).start()
+            ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            if (focused) {
+                lastPos[R_STORE] = position
+                rowRv[R_STORE]?.let { centerOn(it, v) }
+                scrollToRow(R_STORE)
+                setTint(a.color)
+            }
+        }
+        col.setOnClickListener { openStore(a.pkg) }
+        col.setOnKeyListener { _, keyCode, ev ->
+            if (ev.action != KeyEvent.ACTION_DOWN) false
+            else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moveVertical(R_STORE, 1)
+            else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) moveVertical(R_STORE, -1)
+            else false
+        }
+        return col
+    }
+
+    // =====================================================================
+    // Top-left nav + full-screen pages (All Apps / Movies / Series)
+    // =====================================================================
+
+    private val PAGE_APPS = 0
+    private val PAGE_MOVIES = 1
+    private val PAGE_SERIES = 2
+
+    private val MOVIES = listOf(
+        Poster("The Shawshank Redemption", "1994", "Drama"),
+        Poster("The Godfather", "1972", "Crime"),
+        Poster("The Dark Knight", "2008", "Action"),
+        Poster("The Godfather Part II", "1974", "Crime"),
+        Poster("12 Angry Men", "1957", "Drama"),
+        Poster("Schindler's List", "1993", "History"),
+        Poster("The Lord of the Rings: The Return of the King", "2003", "Fantasy"),
+        Poster("Pulp Fiction", "1994", "Crime"),
+        Poster("Forrest Gump", "1994", "Drama"),
+        Poster("Inception", "2010", "Sci-Fi"),
+        Poster("Fight Club", "1999", "Drama"),
+        Poster("The Matrix", "1999", "Sci-Fi"),
+        Poster("Goodfellas", "1990", "Crime"),
+        Poster("Interstellar", "2014", "Sci-Fi"),
+        Poster("Parasite", "2019", "Thriller"),
+        Poster("Gladiator", "2000", "Action"),
+        Poster("The Lion King", "1994", "Animation"),
+        Poster("Whiplash", "2014", "Drama"),
+        Poster("Spirited Away", "2001", "Animation"),
+        Poster("3 Idiots", "2009", "Comedy"),
+        Poster("Dangal", "2016", "Sports"),
+        Poster("Joker", "2019", "Drama"),
+        Poster("Avengers: Endgame", "2019", "Action"),
+        Poster("Django Unchained", "2012", "Western"),
+        Poster("The Prestige", "2006", "Mystery"),
+        Poster("Oppenheimer", "2023", "History"),
+        Poster("Dune: Part Two", "2024", "Sci-Fi"),
+        Poster("The Silence of the Lambs", "1991", "Thriller")
+    )
+
+    private val SERIES = listOf(
+        Poster("Breaking Bad", "2008", "Crime"),
+        Poster("Game of Thrones", "2011", "Fantasy"),
+        Poster("The Wire", "2002", "Crime"),
+        Poster("Chernobyl", "2019", "Drama"),
+        Poster("Band of Brothers", "2001", "War"),
+        Poster("Sherlock", "2010", "Mystery"),
+        Poster("Better Call Saul", "2015", "Crime"),
+        Poster("The Sopranos", "1999", "Crime"),
+        Poster("Stranger Things", "2016", "Sci-Fi"),
+        Poster("Peaky Blinders", "2013", "Crime"),
+        Poster("Dark", "2017", "Sci-Fi"),
+        Poster("Money Heist", "2017", "Thriller"),
+        Poster("Squid Game", "2021", "Thriller"),
+        Poster("Succession", "2018", "Drama"),
+        Poster("True Detective", "2014", "Crime"),
+        Poster("Narcos", "2015", "Crime"),
+        Poster("Black Mirror", "2011", "Sci-Fi"),
+        Poster("Mirzapur", "2018", "Crime"),
+        Poster("Panchayat", "2020", "Comedy"),
+        Poster("Sacred Games", "2018", "Crime"),
+        Poster("Scam 1992", "2020", "Drama"),
+        Poster("The Last of Us", "2023", "Drama"),
+        Poster("Arcane", "2021", "Animation"),
+        Poster("Attack on Titan", "2013", "Anime"),
+        Poster("Death Note", "2006", "Anime"),
+        Poster("Fargo", "2014", "Crime"),
+        Poster("Friends", "1994", "Comedy"),
+        Poster("The Office", "2005", "Comedy")
+    )
+
+    /** One nav button: round icon (Home, All Apps) or text pill (Movies, Series), same look as the Wi-Fi / Settings buttons. */
+    private fun navButton(idx: Int, icon: Drawable?, label: String?, box: Int, pad: Int, onClick: () -> Unit): View {
+        val bg = GradientDrawable()
+        bg.cornerRadius = 200f
+        bg.setColor(Color.TRANSPARENT)
+        val v: View
+        val tintIt: (Int) -> Unit
+        if (icon != null) {
+            val iv = ImageView(this)
+            iv.setImageDrawable(icon)
+            iv.scaleType = ImageView.ScaleType.FIT_CENTER
+            iv.setPadding(pad, pad, pad, pad)
+            v = iv
+            tintIt = { c -> iv.setColorFilter(c) }
+        } else {
+            val tv = TextView(this)
+            tv.text = label
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
+            tv.setTypeface(Typeface.DEFAULT_BOLD)
+            tv.gravity = Gravity.CENTER
+            val hp = (screenW * 0.014f).toInt()
+            tv.setPadding(hp, 0, hp, 0)
+            v = tv
+            tintIt = { c -> tv.setTextColor(c) }
+        }
+        v.background = bg
+        v.isFocusable = true
+        v.isClickable = true
+        if (Build.VERSION.SDK_INT >= 26) v.defaultFocusHighlightEnabled = false
+        val paint: (Boolean) -> Unit = { focused ->
+            bg.setColor(
+                if (focused) Color.argb(240, 255, 255, 255)
+                else if (navSelected == idx) Color.argb(75, 255, 255, 255)
+                else Color.TRANSPARENT
+            )
+            tintIt(if (focused) Color.BLACK else Color.WHITE)
+        }
+        navViews.add(v)
+        navPaint.add(paint)
+        paint(false)
+        v.setOnFocusChangeListener { view, focused ->
+            val sc = if (focused) 1.08f else 1f
+            view.animate().scaleX(sc).scaleY(sc).setDuration(150).start()
+            paint(focused)
+        }
+        v.setOnClickListener { onClick() }
+        v.setOnKeyListener { _, keyCode, ev ->
+            if (ev.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (pageOpen) pageRv.getChildAt(0)?.requestFocus() else focusDock()
+                true
+            } else false
+        }
+        return v
+    }
+
+    private fun setNavSelected(idx: Int) {
+        navSelected = idx
+        for (i in navViews.indices) navPaint[i](navViews[i].isFocused)
+    }
+
+    private fun buildPageLayer(startX: Int): FrameLayout {
+        val layer = FrameLayout(this)
+        layer.clipChildren = false
+        layer.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.rgb(9, 11, 19), Color.rgb(17, 13, 32))
+        )
+        pageTitle = TextView(this)
+        pageTitle.setTextColor(Color.WHITE)
+        pageTitle.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.034f)
+        pageTitle.typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        val tlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
+        tlp.setMargins(startX, (screenH * 0.15f).toInt(), 0, 0)
+        layer.addView(pageTitle, tlp)
+
+        pageSub = TextView(this)
+        pageSub.setTextColor(Color.argb(170, 255, 255, 255))
+        pageSub.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        val slp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
+        slp.setMargins(startX, (screenH * 0.15f + screenW * 0.045f).toInt(), 0, 0)
+        layer.addView(pageSub, slp)
+
+        pageRv = RecyclerView(this)
+        pageRv.clipChildren = false
+        pageRv.clipToPadding = false
+        pageRv.overScrollMode = View.OVER_SCROLL_NEVER
+        val side = (startX - gap).coerceAtLeast(0)
+        pageRv.setPadding(side, gap, side, (screenH * 0.08f).toInt())
+        val rlp = FrameLayout.LayoutParams(MATCH, MATCH)
+        rlp.topMargin = (screenH * 0.15f + screenW * 0.065f).toInt()
+        layer.addView(pageRv, rlp)
+
+        layer.visibility = View.GONE
+        return layer
+    }
+
+    private fun openPage(kind: Int) {
+        if (wifiOpen) closeWifiPanel(false)
+        val availW = screenW - 2 * outer + 2 * gap
+        when (kind) {
+            PAGE_APPS -> {
+                val list = allApps.filter { it.pkg != SETTINGS_PKG }.sortedBy { it.label.lowercase() }
+                pageTitle.text = "All Apps"
+                pageSub.text = "${list.size} installed apps"
+                val cols = (availW / slotW).coerceAtLeast(1)
+                pageRv.layoutManager = GridLayoutManager(this, cols)
+                pageRv.adapter = PageAdapter(list.size, availW / cols, tileW) { buildTile(list[it], -1) }
+            }
+            else -> {
+                val series = kind == PAGE_SERIES
+                val list = if (series) SERIES else MOVIES
+                pageTitle.text = if (series) "Best Series" else "Best Movies"
+                pageSub.text = (if (series) "Top-rated TV series of all time" else "Top-rated movies of all time") +
+                    "  ·  press OK to watch the trailer"
+                val cols = 7
+                val slotPw = availW / cols
+                val cw = slotPw - (gap * 1.2f).toInt()
+                val ch = (cw * 1.5f).toInt()
+                pageRv.layoutManager = GridLayoutManager(this, cols)
+                pageRv.adapter = PageAdapter(list.size, slotPw, cw) { buildPoster(list[it], series, cw, ch) }
+            }
+        }
+        pageOpen = true
+        setNavSelected(kind + 1)
+        scroll.visibility = View.INVISIBLE
+        heroTextLayer.visibility = View.INVISIBLE
+        pageLayer.alpha = 0f
+        pageLayer.visibility = View.VISIBLE
+        pageLayer.animate().alpha(1f).setDuration(200).start()
+        pageRv.scrollToPosition(0)
+        handler.postDelayed({ if (pageOpen) pageRv.getChildAt(0)?.requestFocus() }, 120)
+    }
+
+    private fun closePage() {
+        pageOpen = false
+        pageLayer.visibility = View.GONE
+        pageRv.adapter = null
+        scroll.visibility = View.VISIBLE
+        heroTextLayer.visibility = View.VISIBLE
+    }
+
+    private fun goHome() {
+        if (pageOpen) closePage()
+        setNavSelected(0)
+        lastPos.fill(0)
+        dockRv.scrollToPosition(0)
+        appsRv.scrollToPosition(0)
+        scroll.scrollTo(0, 0)
+        handler.post { focusDock() }
+    }
+
+    inner class PageAdapter(
+        private val n: Int,
+        private val slotWpx: Int,
+        private val itemW: Int,
+        private val build: (Int) -> View
+    ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        override fun getItemCount() = n
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val slot = FrameLayout(parent.context)
+            slot.layoutParams = RecyclerView.LayoutParams(slotWpx, WRAP)
+            slot.clipChildren = false
+            return object : RecyclerView.ViewHolder(slot) {}
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            val slot = holder.itemView as FrameLayout
+            slot.removeAllViews()
+            val lp = FrameLayout.LayoutParams(itemW, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            lp.topMargin = (gap * 0.6f).toInt()
+            lp.bottomMargin = (gap * 0.6f).toInt()
+            slot.addView(build(position), lp)
+        }
+    }
+
+    /** Poster card for Movies / Series. Artwork is looked up online; until it arrives the card shows the title. */
+    private fun buildPoster(p: Poster, series: Boolean, cw: Int, ch: Int): View {
+        val r = radius * 1.3f
+        val hue = ((p.title.hashCode() and 0x7fffffff) % 360).toFloat()
+        val tint = Color.HSVToColor(floatArrayOf(hue, 0.55f, 0.7f))
+
+        val card = FrameLayout(this)
+        card.layoutParams = LinearLayout.LayoutParams(cw, ch)
+        val cardBg = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(withValue(tint, 0.55f, 1.1f), withValue(tint, 0.22f, 1.1f))
+        )
+        cardBg.cornerRadius = r
+        card.background = cardBg
+        card.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, r)
+            }
+        }
+        card.clipToOutline = true
+
+        val fallback = TextView(this)
+        fallback.text = p.title
+        fallback.setTextColor(Color.WHITE)
+        fallback.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
+        fallback.setTypeface(Typeface.DEFAULT_BOLD)
+        fallback.gravity = Gravity.CENTER
+        val fp = (cw * 0.1f).toInt()
+        fallback.setPadding(fp, fp, fp, fp)
+        card.addView(fallback, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val img = ImageView(this)
+        img.scaleType = ImageView.ScaleType.CENTER_CROP
+        img.alpha = 0f
+        img.contentDescription = p.title
+        card.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val key = (if (series) "s:" else "m:") + p.title
+        val show = { url: String ->
+            loadInto(img, listOf(url), (cw * 1.3f).toInt()) {
+                fallback.visibility = View.GONE
+                img.animate().alpha(1f).setDuration(250).start()
+            }
+        }
+        val known = posterUrls[key]
+        if (known != null) show(known)
+        else io.execute {
+            val u = lookupPoster(p, series)
+            if (u != null) runOnUiThread { if (img.contentDescription == p.title) show(u) }
+        }
+
+        val gloss = View(this)
+        gloss.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(40, 255, 255, 255), Color.TRANSPARENT)
+        )
+        card.addView(gloss, FrameLayout.LayoutParams(MATCH, ch / 3, Gravity.TOP))
+
+        val ring = View(this)
+        val ringBg = GradientDrawable()
+        ringBg.cornerRadius = r
+        ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
+        ringBg.setColor(Color.TRANSPARENT)
+        ring.background = ringBg
+        ring.alpha = 0f
+        card.addView(ring, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val title = TextView(this)
+        title.text = p.title
+        title.setTextColor(Color.WHITE)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        title.setTypeface(Typeface.DEFAULT_BOLD)
+        title.maxLines = 1
+        title.ellipsize = TextUtils.TruncateAt.END
+        title.alpha = 0.8f
+        title.setPadding(0, (screenW * 0.006f).toInt(), 0, 0)
+
+        val sub = TextView(this)
+        sub.text = p.year + "  ·  " + p.genre
+        sub.setTextColor(Color.argb(150, 255, 255, 255))
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0095f)
+        sub.maxLines = 1
+        sub.ellipsize = TextUtils.TruncateAt.END
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.clipChildren = false
+        col.isFocusable = true
+        col.isClickable = true
+        col.addView(card)
+        col.addView(title, LinearLayout.LayoutParams(cw, WRAP))
+        col.addView(sub, LinearLayout.LayoutParams(cw, WRAP))
+        col.pivotX = cw / 2f
+        col.pivotY = ch / 2f
+        if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
+        col.setOnFocusChangeListener { v, focused ->
+            val sc = if (focused) 1.08f else 1f
+            v.animate().scaleX(sc).scaleY(sc).setDuration(160).start()
+            (v.parent as? View)?.translationZ = if (focused) 20f else 0f
+            ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
+        }
+        col.setOnClickListener { openTrailer(p, series) }
+        return col
+    }
+
+    private fun openTrailer(p: Poster, series: Boolean) {
+        try {
+            val q = java.net.URLEncoder.encode(p.title + " " + p.year + (if (series) " series" else " movie") + " official trailer", "UTF-8")
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + q))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(i)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Install YouTube to watch trailers", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Looks up a poster URL via the public iTunes Search API (no key needed). Runs on the io pool. */
+    private fun lookupPoster(p: Poster, series: Boolean): String? {
+        val key = (if (series) "s:" else "m:") + p.title
+        posterUrls[key]?.let { return it }
+        try {
+            val q = java.net.URLEncoder.encode(p.title, "UTF-8")
+            val api = if (series) "https://itunes.apple.com/search?term=$q&media=tvShow&entity=tvSeason&limit=10&country=US"
+            else "https://itunes.apple.com/search?term=$q&media=movie&entity=movie&limit=10&country=US"
+            val conn = URL(api).openConnection() as HttpURLConnection
+            conn.connectTimeout = 10000
+            conn.readTimeout = 15000
+            conn.setRequestProperty("User-Agent", UA)
+            val body = try {
+                if (conn.responseCode !in 200..299) return null
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } finally {
+                conn.disconnect()
+            }
+            val arr = org.json.JSONObject(body).optJSONArray("results") ?: return null
+            val t = p.title.lowercase()
+            var best: String? = null
+            var bestScore = -1
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val art = o.optString("artworkUrl100")
+                if (art.isEmpty()) continue
+                val name = (if (series) o.optString("collectionName") else o.optString("trackName")).lowercase()
+                var score = 0
+                if (name == t || name.startsWith("$t, season 1")) score += 4
+                else if (name.startsWith(t)) score += 2
+                if (!series && o.optString("releaseDate").startsWith(p.year)) score += 3
+                if (series && name.endsWith("season 1")) score += 1
+                if (score > bestScore) {
+                    bestScore = score
+                    best = art
+                }
+            }
+            val url = best?.replace(Regex("\\d+x\\d+bb"), "400x600bb") ?: return null
+            posterUrls[key] = url
+            return url
+        } catch (e: Exception) {
+            Log.w(TAG, "poster lookup failed for ${p.title}", e)
+            return null
         }
     }
 
