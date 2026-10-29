@@ -6,7 +6,20 @@ import android.animation.ArgbEvaluator
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.AlarmManager
 import android.app.AlertDialog
+import android.bluetooth.BluetoothAdapter
+import android.location.LocationManager
+import android.media.AudioManager
+import android.os.Environment
+import android.os.StatFs
+import android.text.format.DateFormat
+import android.text.format.Formatter
+import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
@@ -465,11 +478,14 @@ class MainActivity : Activity() {
         val glyph: Int = -1,
         val color: Int = 0,
         val value: String? = null,
-        val sub: List<SItem>? = null,
+        val sub: (() -> List<SItem>)? = null,     // opens a sub page (rebuilt every time it is shown)
+        val checked: Boolean = false,             // shows a tick (picker lists)
+        val note: Boolean = false,                // plain grey info line, not selectable
+        val step: ((Int) -> Unit)? = null,        // Left / Right on the remote adjusts the value
         val action: (() -> Unit)? = null
     )
 
-    class Page(val title: String, val items: List<SItem>, var focus: Int = 0)
+    class Page(val title: String, val build: () -> List<SItem>, var focus: Int = 0)
     class RowViews(val row: LinearLayout, val title: TextView, val value: TextView?)
     class WNet(val ssid: String, val caps: String, val level: Int, val connected: Boolean, val netId: Int)
 
@@ -484,6 +500,12 @@ class MainActivity : Activity() {
     private val PREFS = "ananta_dock"
     private val KEY_DOCK = "force_dock"
     private val KEY_GRID = "force_grid"
+    private val KEY_24H = "clock_24h"
+    private val KEY_PREV_VOL = "prev_volume"
+    private val COARSE_PERM = "android.permission.ACCESS_COARSE_LOCATION"
+    private val NEARBY_PERM = "android.permission.NEARBY_WIFI_DEVICES"
+    private val BT_PERM = "android.permission.BLUETOOTH_CONNECT"
+    private val SECURE_PERM = "android.permission.WRITE_SECURE_SETTINGS"
 
     // Home rows, top to bottom
     private val R_DOCK = 0
@@ -566,6 +588,7 @@ class MainActivity : Activity() {
     private lateinit var avatarDrawable: AvatarDrawable
     private lateinit var wifiBtnView: View
     private lateinit var gearBtnView: View
+    private lateinit var clockView: TextClock
     private val ACCT_PERM = "android.permission.GET_ACCOUNTS"
     private val statusTick = object : Runnable {
         override fun run() {
@@ -608,9 +631,25 @@ class MainActivity : Activity() {
     private lateinit var wifiList: LinearLayout
     private var wifiOpen = false
     private var wifiRecvRegistered = false
+    private var wifiScanning = false
+    private var wifiScanRejected = false
+    private var wifiScanToken = 0
+    private val WIFI_SCAN_EVERY_MS = 30000L     // Android allows ~4 scans per 2 minutes for a foreground app
     private val wifiReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
+                wifiScanning = false
+                wifiScanRejected = false
+            }
             populateWifi()
+        }
+    }
+    private val wifiTick = object : Runnable {
+        override fun run() {
+            if (!wifiOpen) return
+            startWifiScan()
+            populateWifi()
+            handler.postDelayed(this, WIFI_SCAN_EVERY_MS)
         }
     }
 
@@ -646,7 +685,7 @@ class MainActivity : Activity() {
         outer = (screenW * 0.035f).toInt()
         gap = (screenW * 0.0115f).toInt()
         tileW = (screenW * 0.088f).toInt()
-        tileH = (tileW * 0.6f).toInt()
+        tileH = (tileW * 0.74f).toInt()          // taller app tiles (was 0.60)
         radius = screenW * 0.0095f
 
         // Dock geometry: no label inside the dock, so the icons sit exactly in the middle of the glass.
@@ -659,8 +698,10 @@ class MainActivity : Activity() {
         slotW = tileW + 2 * gap
         val labelH = (screenW * 0.0115f * 1.6f + screenW * 0.006f).toInt()
         slotH = tileH + labelH + (gap * 1.2f).toInt()
-        val tileStartX = outer + edgePad + gap
-        val dockTop = (screenH * 0.56f).toInt()      // dock sits low, hero artwork gets more room
+        // Every block (hero text, dock glass, row titles, first card, top bar) shares the same left and
+        // right edge: the edge of the glass dock. Nothing sticks out further left or right than the dock.
+        val tileStartX = outer
+        val dockTop = (screenH * 0.535f).toInt()     // dock sits low (a bit higher now: the tiles are taller)
         dockTopPx = dockTop
 
         // Feed cards (Recently watched / Recommended)
@@ -1000,8 +1041,8 @@ class MainActivity : Activity() {
         wifiBtnView = wifiBtn
 
         val clock = TextClock(this)
-        clock.format12Hour = "h:mm"
-        clock.format24Hour = "HH:mm"
+        clockView = clock
+        applyClockFormat()
         clock.setTextColor(Color.WHITE)
         clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0135f)
         clock.setTypeface(Typeface.DEFAULT_BOLD)
@@ -1076,11 +1117,16 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 78) {
-            // location granted (or refused): refresh the Wi-Fi list either way
+            // Wi-Fi scan permission granted (or refused): scan again and refresh the list either way
             if (wifiOpen) {
                 startWifiScan()
                 populateWifi()
             }
+            return
+        }
+        if (requestCode == 79) {
+            // Bluetooth permission answered: refresh the Settings page
+            if (settingsOpen) showSettingsPage(true)
             return
         }
         refreshAccount()
@@ -1184,11 +1230,22 @@ class MainActivity : Activity() {
         handler.removeCallbacks(statusTick)
         statusTick.run()
         if (hasTvPermission()) loadHeroAsync()
+        // The permission dialog and other screens pause this activity, which drops the Wi-Fi receiver.
+        // Put it back and rescan, otherwise the dropdown never gets the scan results.
+        if (wifiOpen) {
+            registerWifiReceiver()
+            startWifiScan()
+            populateWifi()
+            handler.removeCallbacks(wifiTick)
+            handler.postDelayed(wifiTick, WIFI_SCAN_EVERY_MS)
+        }
+        if (settingsOpen) showSettingsPage(true)
     }
 
     override fun onPause() {
         handler.removeCallbacks(rotator)
         handler.removeCallbacks(statusTick)
+        handler.removeCallbacks(wifiTick)
         unregisterWifiReceiver()
         super.onPause()
     }
@@ -1909,7 +1966,7 @@ class MainActivity : Activity() {
         rv.layoutManager = centeringLayoutManager()
         rv.clipChildren = false
         rv.clipToPadding = false
-        rv.setPadding(outer + edgePad, 0, outer + edgePad, 0)
+        rv.setPadding(outer - gap, 0, outer - gap, 0)   // first card starts exactly at the dock edge
         rv.setItemViewCacheSize(6)
         rv.itemAnimator = null
         rv.overScrollMode = View.OVER_SCROLL_NEVER
@@ -2014,7 +2071,7 @@ class MainActivity : Activity() {
             art.layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         } else {
             art.scaleType = ImageView.ScaleType.FIT_CENTER
-            val s = (tileH * 0.55f).toInt()
+            val s = (tileH * 0.58f).toInt()
             art.layoutParams = FrameLayout.LayoutParams(s, s, Gravity.CENTER)
         }
 
@@ -2407,6 +2464,34 @@ class MainActivity : Activity() {
     private fun wifiManager(): WifiManager =
         applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
+    private fun hasPerm(p: String): Boolean =
+        Build.VERSION.SDK_INT < 23 || checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+
+    /** True when Android will hand this app the list of nearby networks. */
+    private fun hasWifiScanPermission(): Boolean {
+        if (hasPerm(LOC_PERM)) return true
+        if (Build.VERSION.SDK_INT < 29 && hasPerm(COARSE_PERM)) return true
+        if (Build.VERSION.SDK_INT >= 33 && hasPerm(NEARBY_PERM)) return true
+        return false
+    }
+
+    @Suppress("DEPRECATION")
+    private fun locationServicesOn(): Boolean {
+        return try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            if (Build.VERSION.SDK_INT >= 28) lm.isLocationEnabled
+            else Settings.Secure.getInt(contentResolver, Settings.Secure.LOCATION_MODE, 1) != Settings.Secure.LOCATION_MODE_OFF
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    /** Android only returns scan results while Location is on, unless the Android 13 "Nearby Wi-Fi" permission is used. */
+    private fun needsLocationOn(): Boolean {
+        if (Build.VERSION.SDK_INT >= 33 && hasPerm(NEARBY_PERM)) return false
+        return !locationServicesOn()
+    }
+
     @Suppress("DEPRECATION")
     private fun currentSsid(): String? {
         return try {
@@ -2422,36 +2507,71 @@ class MainActivity : Activity() {
         if (wifiOpen) closeWifiPanel(true) else openWifiPanel()
     }
 
+    /** Starts a scan. Returns false when Android refuses (too many scans, Wi-Fi off, ...). */
     @Suppress("DEPRECATION")
-    private fun startWifiScan() {
-        try {
+    private fun startWifiScan(): Boolean {
+        val ok = try {
             wifiManager().startScan()
         } catch (e: Exception) {
             Log.w(TAG, "startScan failed", e)
+            false
         }
+        wifiScanRejected = !ok
+        wifiScanning = ok
+        if (ok) {
+            // some boxes never send the "results ready" broadcast: stop saying "Scanning" after a while
+            val token = ++wifiScanToken
+            handler.postDelayed({
+                if (token == wifiScanToken && wifiScanning) {
+                    wifiScanning = false
+                    if (wifiOpen) populateWifi()
+                }
+            }, 10000)
+        }
+        return ok
+    }
+
+    private fun requestWifiPermissions() {
+        if (Build.VERSION.SDK_INT < 23 || hasWifiScanPermission()) return
+        val need = ArrayList<String>()
+        need.add(LOC_PERM)
+        need.add(COARSE_PERM)
+        if (Build.VERSION.SDK_INT >= 33) need.add(NEARBY_PERM)
+        try {
+            requestPermissions(need.toTypedArray(), 78)
+        } catch (e: Exception) {
+            Log.w(TAG, "permission request failed", e)
+        }
+    }
+
+    private fun registerWifiReceiver() {
+        if (wifiRecvRegistered) return
+        val f = IntentFilter()
+        f.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+        f.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
+        f.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+        registerReceiver(wifiReceiver, f)
+        wifiRecvRegistered = true
     }
 
     private fun openWifiPanel() {
         wifiOpen = true
         homeGroup.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-        if (!hasLocationPermission() && Build.VERSION.SDK_INT >= 23) {
-            // Android only returns the list of nearby networks to apps that may see the location
-            requestPermissions(arrayOf(LOC_PERM), 78)
-        }
-        if (!wifiRecvRegistered) {
-            registerReceiver(wifiReceiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
-            wifiRecvRegistered = true
-        }
+        requestWifiPermissions()
+        registerWifiReceiver()
         startWifiScan()
         wifiPanel.alpha = 0f
         wifiPanel.visibility = View.VISIBLE
         wifiPanel.animate().alpha(1f).setDuration(160).start()
         populateWifi()
+        handler.removeCallbacks(wifiTick)
+        handler.postDelayed(wifiTick, WIFI_SCAN_EVERY_MS)
         wifiList.post { wifiList.getChildAt(0)?.requestFocus() }
     }
 
     private fun closeWifiPanel(refocus: Boolean) {
         wifiOpen = false
+        handler.removeCallbacks(wifiTick)
         unregisterWifiReceiver()
         wifiPanel.visibility = View.GONE
         homeGroup.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
@@ -2512,6 +2632,23 @@ class MainActivity : Activity() {
     private fun isSecured(caps: String): Boolean =
         caps.contains("WEP") || caps.contains("PSK") || caps.contains("EAP") || caps.contains("SAE")
 
+    /** Switches Wi-Fi on/off. Returns false when Android does not let apps do that (Android 10+). */
+    @Suppress("DEPRECATION")
+    private fun setWifiEnabledByApp(enable: Boolean): Boolean = try {
+        Build.VERSION.SDK_INT < 29 && wifiManager().setWifiEnabled(enable)
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun wifiNote(text: String, textPx: Float, rowH: Int): TextView {
+        val msg = TextView(this)
+        msg.text = text
+        msg.setTextColor(Color.argb(150, 255, 255, 255))
+        msg.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx * 0.8f)
+        msg.setPadding((rowH * 0.3f).toInt(), (rowH * 0.12f).toInt(), (rowH * 0.3f).toInt(), (rowH * 0.18f).toInt())
+        return msg
+    }
+
     @Suppress("DEPRECATION")
     private fun populateWifi() {
         if (!wifiOpen) return
@@ -2526,22 +2663,18 @@ class MainActivity : Activity() {
 
         val toggle = menuRow(rowW, rowH, textPx, WifiDrawable(Color.WHITE), null, "Wi-Fi",
             if (on) "On" else "Off", false, 1f) {
-            try {
-                if (Build.VERSION.SDK_INT >= 29 || !wm.setWifiEnabled(!on)) {
-                    closeWifiPanel(false)
-                    openSystem(Settings.ACTION_WIFI_SETTINGS)
-                } else {
-                    handler.postDelayed({
-                        if (wifiOpen) {
-                            startWifiScan()
-                            populateWifi()
-                        }
-                    }, 1500)
-                    populateWifi()
-                }
-            } catch (e: Exception) {
+            if (!setWifiEnabledByApp(!on)) {
+                // Android 10+ does not let apps switch Wi-Fi; hand over to the system screen
                 closeWifiPanel(false)
                 openSystem(Settings.ACTION_WIFI_SETTINGS)
+            } else {
+                handler.postDelayed({
+                    if (wifiOpen) {
+                        startWifiScan()
+                        populateWifi()
+                    }
+                }, 1500)
+                populateWifi()
             }
         }
         toggle.row.tag = "__toggle"
@@ -2555,28 +2688,60 @@ class MainActivity : Activity() {
         rows++
 
         if (on) {
-            val nets = collectNetworks(wm)
-            if (nets.isEmpty()) {
-                val msg = TextView(this)
-                msg.text = if (hasLocationPermission()) "Looking for networks…" else "Allow Location access to see nearby networks"
-                msg.setTextColor(Color.argb(150, 255, 255, 255))
-                msg.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx * 0.85f)
-                msg.setPadding((rowH * 0.3f).toInt(), (rowH * 0.2f).toInt(), (rowH * 0.3f).toInt(), (rowH * 0.2f).toInt())
-                wifiList.addView(msg, LinearLayout.LayoutParams(MATCH, WRAP))
+            // Why would the list stay empty? Tell the user and give a one-click fix.
+            if (!hasWifiScanPermission()) {
+                val perm = menuRow(rowW, rowH, textPx, null, null, "Allow location access", null, false, 1f) {
+                    requestWifiPermissions()
+                }
+                perm.row.tag = "__perm"
+                wifiList.addView(perm.row)
+                rows++
+                wifiList.addView(wifiNote("Android only lets apps see nearby Wi-Fi after you allow Precise Location.", textPx, rowH), LinearLayout.LayoutParams(MATCH, WRAP))
+                rows++
+            } else if (needsLocationOn()) {
+                val loc = menuRow(rowW, rowH, textPx, null, null, "Turn on Location", null, true, 1f) {
+                    closeWifiPanel(false)
+                    openSystem(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                }
+                loc.row.tag = "__loc"
+                wifiList.addView(loc.row)
+                rows++
+                wifiList.addView(wifiNote("Android hides nearby networks while Location is switched off.", textPx, rowH), LinearLayout.LayoutParams(MATCH, WRAP))
                 rows++
             }
+
+            val nets = collectNetworks(wm)
+            val status = when {
+                wifiScanning -> "Scanning for networks…"
+                wifiScanRejected -> "Android limits how often it can scan. Showing the last results."
+                nets.isEmpty() -> "No networks found yet."
+                else -> "${nets.size} network" + (if (nets.size == 1) "" else "s") + " found"
+            }
+            wifiList.addView(wifiNote(status, textPx, rowH), LinearLayout.LayoutParams(MATCH, WRAP))
+            rows++
             for (n in nets) {
                 val d = WifiDrawable(Color.WHITE)
                 d.update(if (n.level >= -60) 3 else if (n.level >= -72) 2 else 1, true)
-                val sub = if (n.connected) "Connected \u2713" else if (n.netId >= 0) "Saved" else if (isSecured(n.caps)) "Secured" else "Open"
+                val sub = if (n.connected) "Connected ✓" else if (n.netId >= 0) "Saved" else if (isSecured(n.caps)) "Secured" else "Open"
                 val rv = menuRow(rowW, rowH, textPx, d, null, n.ssid, sub, false, 1f) { connectToNet(n) }
                 rv.row.tag = "net:" + n.ssid
                 wifiList.addView(rv.row)
                 rows++
             }
+
+            val scan = menuRow(rowW, rowH, textPx, null, null, "Scan again",
+                if (wifiScanning) "Scanning…" else null, false, 1f) {
+                if (!startWifiScan()) {
+                    Toast.makeText(this, "Android only allows a few scans per minute. Try again in a moment.", Toast.LENGTH_SHORT).show()
+                }
+                populateWifi()
+            }
+            scan.row.tag = "__scan"
+            wifiList.addView(scan.row)
+            rows++
         }
 
-        val more = menuRow(rowW, rowH, textPx, null, null, "More Wi-Fi settings\u2026", null, true, 1f) {
+        val more = menuRow(rowW, rowH, textPx, null, null, "More Wi-Fi settings…", null, true, 1f) {
             closeWifiPanel(false)
             openSystem(Settings.ACTION_WIFI_SETTINGS)
         }
@@ -2584,7 +2749,7 @@ class MainActivity : Activity() {
         wifiList.addView(more.row)
         rows++
 
-        val maxH = (screenH * 0.55f).toInt()
+        val maxH = (screenH * 0.62f).toInt()
         val wantH = rows * (rowH + (rowH * 0.12f).toInt()) + 2 * (screenW * 0.008f).toInt() + (rowH * 0.2f).toInt()
         val slp = wifiScroll.layoutParams
         slp.height = if (wantH > maxH) maxH else WRAP
@@ -2688,6 +2853,8 @@ class MainActivity : Activity() {
 
     // =====================================================================
     // Settings screen (Apple TV style: big centred list, white pill on focus)
+    // Everything you can change here happens inside the launcher; only a few
+    // rarely used items still hand over to the Android screen (marked in README).
     // =====================================================================
 
     private fun settingsIcon(kind: Int): Drawable = when (kind) {
@@ -2704,34 +2871,322 @@ class MainActivity : Activity() {
 
     private fun sys(action: String): () -> Unit = { openSystem(action) }
 
+    private fun onOff(b: Boolean): String = if (b) "On" else "Off"
+
+    private fun toast(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    }
+
+    /** Re-draws the Settings page that is on screen (e.g. after a value changed a moment later). */
+    private fun refreshSettingsSoon(delayMs: Long) {
+        handler.postDelayed({ if (settingsOpen) showSettingsPage(true) }, delayMs)
+    }
+
     private fun settingsRoot(): List<SItem> {
         val acct = googleAccount() ?: "Not signed in"
         val net = currentSsid() ?: "Not connected"
         return listOf(
-            SItem("General", 0, Color.parseColor("#8e8e93"), sub = listOf(
-                SItem("Date and Time", action = sys(Settings.ACTION_DATE_SETTINGS)),
-                SItem("Language", action = sys(Settings.ACTION_LOCALE_SETTINGS)),
-                SItem("Keyboard", action = sys(Settings.ACTION_INPUT_METHOD_SETTINGS)),
-                SItem("Storage", action = sys(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)),
-                SItem("Accessibility", action = sys(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
-                SItem("About", action = sys(Settings.ACTION_DEVICE_INFO_SETTINGS))
-            )),
+            SItem("General", 0, Color.parseColor("#8e8e93"), sub = {
+                listOf(
+                    SItem("Date and Time", value = zoneLabel(TimeZone.getDefault().id), sub = { dateTimeItems() }),
+                    SItem("Language", value = Locale.getDefault().displayLanguage, action = sys(Settings.ACTION_LOCALE_SETTINGS)),
+                    SItem("Keyboard", action = sys(Settings.ACTION_INPUT_METHOD_SETTINGS)),
+                    SItem("Storage", sub = { storageItems() }),
+                    SItem("Accessibility", action = sys(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
+                    SItem("About", sub = { aboutItems() })
+                )
+            }),
             SItem("Users and Accounts", 1, Color.parseColor("#3478f6"), value = acct,
                 action = sys(Settings.ACTION_SYNC_SETTINGS)),
-            SItem("Video and Audio", 2, Color.parseColor("#30a46c"), sub = listOf(
-                SItem("Video and Display", action = sys(Settings.ACTION_DISPLAY_SETTINGS)),
-                SItem("Audio and Sound", action = sys(Settings.ACTION_SOUND_SETTINGS))
-            )),
+            SItem("Video and Audio", 2, Color.parseColor("#30a46c"), sub = {
+                listOf(
+                    SItem("Sound", sub = { soundItems() }),
+                    SItem("Video and Display", action = sys(Settings.ACTION_DISPLAY_SETTINGS))
+                )
+            }),
             SItem("Screen Saver", 3, Color.parseColor("#af52de"), action = sys(Settings.ACTION_DREAM_SETTINGS)),
-            SItem("Remotes and Devices", 4, Color.parseColor("#ff9f0a"), action = sys(Settings.ACTION_BLUETOOTH_SETTINGS)),
+            SItem("Remotes and Devices", 4, Color.parseColor("#ff9f0a"), sub = { bluetoothItems() }),
             SItem("Apps", 5, Color.parseColor("#0a84ff"), action = sys(Settings.ACTION_APPLICATION_SETTINGS)),
-            SItem("Network", 6, Color.parseColor("#30b0c7"), value = net, action = sys(Settings.ACTION_WIFI_SETTINGS)),
-            SItem("Home Screen", 8, Color.parseColor("#ff375f"), sub = listOf(
-                SItem("Reset Dock and All Apps", action = { resetLayout() })
-            )),
+            SItem("Network", 6, Color.parseColor("#30b0c7"), value = net, sub = { networkItems() }),
+            SItem("Home Screen", 8, Color.parseColor("#ff375f"), sub = {
+                listOf(SItem("Reset Dock and All Apps", action = { resetLayout() }))
+            }),
             SItem("System", 7, Color.parseColor("#636366"), value = "Android Settings", action = sys(Settings.ACTION_SETTINGS))
         )
     }
+
+    // ---- Date and Time ----------------------------------------------------
+
+    private fun globalInt(name: String, def: Int): Int =
+        try {
+            Settings.Global.getInt(contentResolver, name, def)
+        } catch (e: Exception) {
+            def
+        }
+
+    private fun canWriteSecure(): Boolean = hasPerm(SECURE_PERM)
+
+    /** Writes a Settings.Global switch. Needs a one-time `adb shell pm grant` of WRITE_SECURE_SETTINGS. */
+    private fun setGlobalInt(name: String, v: Int): Boolean =
+        try {
+            Settings.Global.putInt(contentResolver, name, v)
+        } catch (e: SecurityException) {
+            toast("One-time setup needed. On a PC run:  adb shell pm grant $packageName $SECURE_PERM")
+            false
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun is24(): Boolean =
+        if (prefs.contains(KEY_24H)) prefs.getBoolean(KEY_24H, false) else DateFormat.is24HourFormat(this)
+
+    private fun applyClockFormat() {
+        val f = if (is24()) "HH:mm" else "h:mm"
+        clockView.format12Hour = f
+        clockView.format24Hour = f
+    }
+
+    private fun set24(on: Boolean) {
+        prefs.edit().putBoolean(KEY_24H, on).apply()
+        applyClockFormat()
+        // also tell Android when it lets us (needs WRITE_SETTINGS); the launcher clock works either way
+        try {
+            if (Build.VERSION.SDK_INT >= 23 && Settings.System.canWrite(this)) {
+                Settings.System.putString(contentResolver, Settings.System.TIME_12_24, if (on) "24" else "12")
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+    }
+
+    private val zoneIds = listOf(
+        "Pacific/Pago_Pago", "Pacific/Honolulu", "America/Anchorage", "America/Los_Angeles", "America/Denver",
+        "America/Chicago", "America/New_York", "America/Halifax", "America/Sao_Paulo", "Atlantic/Azores", "UTC",
+        "Europe/London", "Europe/Paris", "Europe/Berlin", "Africa/Lagos", "Africa/Cairo", "Africa/Johannesburg",
+        "Europe/Istanbul", "Europe/Moscow", "Africa/Nairobi", "Asia/Riyadh", "Asia/Dubai", "Asia/Tehran",
+        "Asia/Karachi", "Asia/Tashkent", "Asia/Kolkata", "Asia/Colombo", "Asia/Kathmandu", "Asia/Dhaka",
+        "Asia/Bangkok", "Asia/Jakarta", "Asia/Singapore", "Asia/Kuala_Lumpur", "Asia/Shanghai", "Asia/Hong_Kong",
+        "Asia/Manila", "Asia/Tokyo", "Asia/Seoul", "Australia/Perth", "Australia/Adelaide", "Australia/Sydney",
+        "Pacific/Guam", "Pacific/Auckland"
+    )
+
+    private fun zoneOffsetMs(id: String): Int = TimeZone.getTimeZone(id).getOffset(System.currentTimeMillis())
+
+    private fun gmtLabel(id: String): String {
+        val off = zoneOffsetMs(id)
+        val a = Math.abs(off) / 60000
+        return String.format(Locale.US, "GMT%s%02d:%02d", if (off < 0) "-" else "+", a / 60, a % 60)
+    }
+
+    private fun zoneLabel(id: String): String = gmtLabel(id) + "  " + id.substringAfter('/').replace('_', ' ')
+
+    private fun zoneItems(): List<SItem> {
+        val cur = TimeZone.getDefault().id
+        val ids = ArrayList<String>(zoneIds)
+        if (!ids.contains(cur)) ids.add(cur)
+        ids.sortBy { zoneOffsetMs(it) }
+        val items = ArrayList<SItem>()
+        for (id in ids) {
+            items.add(SItem(zoneLabel(id), checked = id == cur, action = {
+                setTimeZoneId(id)
+                settingsBack()
+            }))
+        }
+        // open the list on the zone that is selected now
+        settingsStack.lastOrNull()?.let { it.focus = ids.indexOf(cur).coerceAtLeast(0) }
+        return items
+    }
+
+    private fun setTimeZoneId(id: String) {
+        try {
+            if (canWriteSecure() && globalInt(Settings.Global.AUTO_TIME_ZONE, 0) == 1) {
+                Settings.Global.putInt(contentResolver, Settings.Global.AUTO_TIME_ZONE, 0)
+            }
+            (getSystemService(Context.ALARM_SERVICE) as AlarmManager).setTimeZone(id)
+            TimeZone.setDefault(TimeZone.getTimeZone(id))
+            Toast.makeText(this, "Time zone: " + zoneLabel(id), Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.w(TAG, "setTimeZone failed", e)
+            toast("This device does not let apps change the time zone.")
+        }
+    }
+
+    private fun dateTimeItems(): List<SItem> {
+        val now = Date()
+        val tz = TimeZone.getDefault()
+        val dateFmt = SimpleDateFormat("EEE, MMM d, yyyy", Locale.getDefault())
+        val timeFmt = SimpleDateFormat(if (is24()) "HH:mm" else "h:mm a", Locale.getDefault())
+        dateFmt.timeZone = tz
+        timeFmt.timeZone = tz
+        val auto = globalInt(Settings.Global.AUTO_TIME, 1) == 1
+        val autoZone = globalInt(Settings.Global.AUTO_TIME_ZONE, 1) == 1
+        val manualMsg = "Date and time come from the network. Android does not let apps set them by hand."
+        val items = ArrayList<SItem>()
+        items.add(SItem("Automatic Date and Time", value = onOff(auto), action = {
+            setGlobalInt(Settings.Global.AUTO_TIME, if (auto) 0 else 1)
+        }))
+        items.add(SItem("Date", value = dateFmt.format(now), action = { toast(manualMsg) }))
+        items.add(SItem("Time", value = timeFmt.format(now), action = { toast(manualMsg) }))
+        items.add(SItem("Time Zone", value = zoneLabel(tz.id), sub = { zoneItems() }))
+        items.add(SItem("Set Time Zone Automatically", value = onOff(autoZone), action = {
+            setGlobalInt(Settings.Global.AUTO_TIME_ZONE, if (autoZone) 0 else 1)
+        }))
+        items.add(SItem("24-Hour Clock", value = onOff(is24()), action = { set24(!is24()) }))
+        if (!canWriteSecure()) {
+            items.add(SItem("To switch the automatic options on or off, run once on a PC:  adb shell pm grant $packageName $SECURE_PERM", note = true))
+        }
+        return items
+    }
+
+    // ---- Storage / About --------------------------------------------------
+
+    private fun storageItems(): List<SItem> {
+        return try {
+            val st = StatFs(Environment.getDataDirectory().path)
+            val total = st.totalBytes
+            val free = st.availableBytes
+            listOf(
+                SItem("Total", value = Formatter.formatFileSize(this, total)),
+                SItem("Used", value = Formatter.formatFileSize(this, total - free)),
+                SItem("Available", value = Formatter.formatFileSize(this, free)),
+                SItem("Installed apps", value = (allApps.size - 1).coerceAtLeast(0).toString())
+            )
+        } catch (e: Exception) {
+            listOf(SItem("Storage information is not available on this device.", note = true))
+        }
+    }
+
+    private fun localIp(): String? {
+        return try {
+            var found: String? = null
+            for (nif in java.util.Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!nif.isUp || nif.isLoopback) continue
+                for (a in java.util.Collections.list(nif.inetAddresses)) {
+                    if (!a.isLoopbackAddress && a is java.net.Inet4Address) {
+                        found = a.hostAddress
+                        break
+                    }
+                }
+                if (found != null) break
+            }
+            found
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun aboutItems(): List<SItem> {
+        val ver = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        val patch = if (Build.VERSION.SDK_INT >= 23) Build.VERSION.SECURITY_PATCH else "-"
+        return listOf(
+            SItem("Device", value = Build.MODEL),
+            SItem("Manufacturer", value = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }),
+            SItem("Android version", value = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"),
+            SItem("Security patch", value = patch),
+            SItem("Build", value = Build.DISPLAY),
+            SItem("IP address", value = localIp() ?: "Not connected"),
+            SItem("Ananta TV Launcher", value = ver)
+        )
+    }
+
+    // ---- Sound ------------------------------------------------------------
+
+    private fun soundItems(): List<SItem> {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        return listOf(
+            SItem("Volume", value = "‹   $cur / $max   ›",
+                step = { d ->
+                    try {
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, (cur + d).coerceIn(0, max), 0)
+                    } catch (e: Exception) {
+                        // fixed-volume outputs (HDMI / CEC) ignore this
+                    }
+                },
+                action = {
+                    try {
+                        if (cur > 0) {
+                            prefs.edit().putInt(KEY_PREV_VOL, cur).apply()
+                            am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                        } else {
+                            am.setStreamVolume(AudioManager.STREAM_MUSIC, prefs.getInt(KEY_PREV_VOL, max / 2).coerceIn(1, max), 0)
+                        }
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }),
+            SItem("Press ◀ / ▶ on the remote to change the volume, OK to mute.", note = true)
+        )
+    }
+
+    // ---- Network ----------------------------------------------------------
+
+    private fun networkItems(): List<SItem> {
+        val wm = wifiManager()
+        val on = try { wm.isWifiEnabled } catch (e: Exception) { true }
+        val ssid = currentSsid()
+        val items = ArrayList<SItem>()
+        items.add(SItem("Wi-Fi", value = onOff(on), action = {
+            if (!setWifiEnabledByApp(!on)) {
+                toast("Android 10 and newer do not let apps switch Wi-Fi. Opening Wi-Fi settings.")
+                openSystem(Settings.ACTION_WIFI_SETTINGS)
+            } else {
+                refreshSettingsSoon(1500)
+            }
+        }))
+        items.add(SItem("Connected To", value = ssid ?: if (hasWifiScanPermission()) "Not connected" else "Allow location to show"))
+        items.add(SItem("IP Address", value = localIp() ?: "-"))
+        items.add(SItem("Available Networks", action = {
+            closeSettings(false)
+            openWifiPanel()
+        }))
+        return items
+    }
+
+    // ---- Bluetooth / remotes ----------------------------------------------
+
+    @Suppress("DEPRECATION", "MissingPermission")
+    private fun bluetoothItems(): List<SItem> {
+        val bt = try { BluetoothAdapter.getDefaultAdapter() } catch (e: Exception) { null }
+        if (bt == null) return listOf(SItem("This device has no Bluetooth.", note = true))
+        if (Build.VERSION.SDK_INT >= 31 && !hasPerm(BT_PERM)) {
+            return listOf(
+                SItem("Allow Bluetooth Access", action = {
+                    try { requestPermissions(arrayOf(BT_PERM), 79) } catch (e: Exception) { /* ignore */ }
+                }),
+                SItem("Android needs your OK before an app can see or switch Bluetooth.", note = true)
+            )
+        }
+        val items = ArrayList<SItem>()
+        val on = try { bt.isEnabled } catch (e: Exception) { false }
+        items.add(SItem("Bluetooth", value = onOff(on), action = {
+            try {
+                val ok = if (on) bt.disable() else bt.enable()
+                if (!ok) toast("Android did not allow switching Bluetooth from here.")
+            } catch (e: Exception) {
+                toast("Android did not allow switching Bluetooth from here.")
+            }
+            refreshSettingsSoon(1500)
+        }))
+        if (on) {
+            try {
+                for (d in bt.bondedDevices) {
+                    items.add(SItem(d.name ?: d.address, value = "Paired"))
+                }
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+        items.add(SItem("Pair New Device…", action = sys(Settings.ACTION_BLUETOOTH_SETTINGS)))
+        return items
+    }
+
+    // ---- screen ------------------------------------------------------------
 
     private fun buildSettingsLayer(): FrameLayout {
         val layer = FrameLayout(this)
@@ -2785,7 +3240,7 @@ class MainActivity : Activity() {
     private fun openSettings() {
         if (wifiOpen) closeWifiPanel(false)
         settingsStack.clear()
-        settingsStack.add(Page("Settings", settingsRoot()))
+        settingsStack.add(Page("Settings", { settingsRoot() }))
         settingsOpen = true
         homeGroup.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         settingsLayer.alpha = 0f
@@ -2810,31 +3265,90 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showSettingsPage() {
+    /**
+     * Draws the top Settings page. The rows come from the page's builder, so values are always current.
+     * [keepPlace] = refresh in place (same scroll position, same focused row) after a value changed.
+     */
+    private fun showSettingsPage(keepPlace: Boolean = false) {
         val page = settingsStack[settingsStack.size - 1]
+        val oldScroll = settingsScroll.scrollY
+        var focusIdx = page.focus
+        if (keepPlace) {
+            val fc = settingsList.focusedChild
+            if (fc != null) focusIdx = settingsList.indexOfChild(fc)
+        }
+        val items = page.build()          // (the time zone list also sets page.focus to the selected zone)
+        if (!keepPlace) focusIdx = page.focus
         settingsTitle.text = page.title
         settingsCrumb.visibility = if (settingsStack.size > 1) View.VISIBLE else View.GONE
         settingsList.removeAllViews()
         val rowH = (screenW * 0.046f).toInt()
         val textPx = screenW * 0.0135f
-        for (i in page.items.indices) {
-            val item = page.items[i]
+        for (i in items.indices) {
+            val item = items[i]
+            if (item.note) {
+                val tv = TextView(this)
+                tv.text = item.title
+                tv.setTextColor(Color.argb(140, 255, 255, 255))
+                tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx * 0.72f)
+                val np = (rowH * 0.3f).toInt()
+                tv.setPadding(np, (rowH * 0.12f).toInt(), np, (rowH * 0.12f).toInt())
+                settingsList.addView(tv, LinearLayout.LayoutParams(MATCH, WRAP))
+                continue
+            }
             val icon = if (item.glyph >= 0) settingsIcon(item.glyph) else null
             val badge = if (item.glyph >= 0) item.color else null
-            val rv = menuRow(MATCH, rowH, textPx, icon, badge, item.title, item.value, item.sub != null, 1.03f) {
-                if (item.sub != null) {
+            val subBuilder = item.sub
+            val act = item.action
+            val shownValue = if (item.checked) "✓" else item.value
+            val onClick: () -> Unit = {
+                val sb = subBuilder
+                val ac = act
+                if (sb != null) {
                     page.focus = i
-                    settingsStack.add(Page(item.title, item.sub))
+                    settingsStack.add(Page(item.title, sb))
                     showSettingsPage()
-                } else {
-                    item.action?.invoke()
+                } else if (ac != null) {
+                    page.focus = i
+                    ac()
+                    // still on the same page? redraw it with the new value
+                    if (settingsOpen && settingsStack.isNotEmpty() && settingsStack[settingsStack.size - 1] === page) {
+                        showSettingsPage(true)
+                    }
+                }
+            }
+            val rv = menuRow(MATCH, rowH, textPx, icon, badge, item.title, shownValue, subBuilder != null, 1.03f, onClick)
+            val st = item.step
+            if (st != null) {
+                rv.row.setOnKeyListener { _, keyCode, ev ->
+                    if (ev.action == KeyEvent.ACTION_DOWN &&
+                        (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+                    ) {
+                        st(if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1)
+                        showSettingsPage(true)
+                        true
+                    } else false
                 }
             }
             settingsList.addView(rv.row)
         }
-        settingsScroll.scrollTo(0, 0)
+        if (!keepPlace) settingsScroll.scrollTo(0, 0)
         settingsList.post {
-            settingsList.getChildAt(page.focus.coerceIn(0, (settingsList.childCount - 1).coerceAtLeast(0)))?.requestFocus()
+            val n = settingsList.childCount
+            if (n > 0) {
+                // focus the wanted row, or the nearest row that can take focus (info lines can't)
+                val want = focusIdx.coerceIn(0, n - 1)
+                var target: View? = null
+                var k = 0
+                while (target == null && k < n) {
+                    val a = settingsList.getChildAt(want + k)
+                    val b = settingsList.getChildAt(want - k)
+                    target = if (a != null && a.isFocusable) a else if (b != null && b.isFocusable) b else null
+                    k++
+                }
+                target?.requestFocus()
+            }
+            if (keepPlace) settingsScroll.scrollTo(0, oldScroll)
         }
     }
 }
