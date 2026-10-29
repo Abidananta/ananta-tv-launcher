@@ -674,9 +674,13 @@ class MainActivity : Activity() {
     private lateinit var pageSub: TextView
     private lateinit var pageRv: RecyclerView
     private var pageOpen = false
+    private var pageTint = Color.parseColor("#4a3aa8")
+    private var pageTintAnim: ValueAnimator? = null
+    private val pageGlowBg = GradientDrawable()
+    private val GOLD = Color.parseColor("#FFD54A")
     private var libMovies: List<HeroItem> = emptyList()
     private var libSeries: List<HeroItem> = emptyList()
-    data class PageEntry(val header: String? = null, val hero: HeroItem? = null, val poster: Poster? = null)
+    data class PageEntry(val header: String? = null, val hero: HeroItem? = null, val poster: Poster? = null, val rank: Int = 0)
     private var navSelected = 0
     private val navViews = ArrayList<View>()
     private val navPaint = ArrayList<(Boolean) -> Unit>()
@@ -2023,7 +2027,16 @@ class MainActivity : Activity() {
         t.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
         t.setTypeface(Typeface.DEFAULT_BOLD)
         t.letterSpacing = 0.3f
-        h.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+        h.addView(t, LinearLayout.LayoutParams(WRAP, WRAP))
+        val hair = View(this)
+        hair.background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(Color.argb(80, 255, 255, 255), Color.TRANSPARENT)
+        )
+        val hlp = LinearLayout.LayoutParams(0, 2, 1f)
+        hlp.leftMargin = (screenW * 0.012f).toInt()
+        hlp.rightMargin = (screenW * 0.012f).toInt()
+        h.addView(hair, hlp)
         if (hint != null) {
             val ht = TextView(this)
             ht.text = hint
@@ -2152,6 +2165,10 @@ class MainActivity : Activity() {
             }
         }
         card.clipToOutline = true
+        if (Build.VERSION.SDK_INT >= 28) {
+            card.outlineSpotShadowColor = app.tint
+            card.outlineAmbientShadowColor = app.tint
+        }
 
         val art = ImageView(this)
         art.setImageDrawable(app.art)
@@ -2183,7 +2200,7 @@ class MainActivity : Activity() {
         ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
         ringBg.setColor(Color.TRANSPARENT)
         ring.background = ringBg
-        ring.alpha = 0f
+        ring.alpha = 0.16f
 
         card.addView(art)
         card.addView(gloss)
@@ -2228,8 +2245,9 @@ class MainActivity : Activity() {
             v.animate().scaleX(s).scaleY(s).setDuration(160).start()
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
             label.animate().alpha(if (focused) 1f else restingLabel).setDuration(160).start()
-            ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            ring.animate().alpha(if (focused) 1f else 0.16f).setDuration(160).start()
             glow.animate().alpha(if (focused) 1f else 0f).setDuration(220).start()
+            card.animate().translationZ(if (focused) 24f else 0f).setDuration(170).start()
             if (focused && row < 0) {
                 setTint(app.tint)
             } else if (focused) {
@@ -2311,6 +2329,16 @@ class MainActivity : Activity() {
             intArrayOf(Color.argb(40, 255, 255, 255), Color.TRANSPARENT)
         )
         card.addView(gloss, FrameLayout.LayoutParams(MATCH, cardH / 2, Gravity.TOP))
+        val shade = View(this)
+        shade.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.TRANSPARENT, Color.argb(130, 0, 0, 0))
+        )
+        card.addView(shade, FrameLayout.LayoutParams(MATCH, cardH / 3, Gravity.BOTTOM))
+        if (Build.VERSION.SDK_INT >= 28) {
+            card.outlineSpotShadowColor = tint
+            card.outlineAmbientShadowColor = tint
+        }
 
         if (item.progress > 0.01f) {
             val barH = (screenW * 0.0032f).toInt().coerceAtLeast(4)
@@ -2368,6 +2396,7 @@ class MainActivity : Activity() {
             v.animate().scaleX(s).scaleY(s).setDuration(160).start()
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            card.animate().translationZ(if (focused) 24f else 0f).setDuration(170).start()
             title.animate().alpha(if (focused) 1f else 0.75f).setDuration(160).start()
             if (focused) {
                 lastPos[row] = position
@@ -2783,12 +2812,24 @@ class MainActivity : Activity() {
         layer.clipChildren = false
         layer.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.rgb(9, 11, 19), Color.rgb(17, 13, 32))
+            intArrayOf(Color.rgb(10, 11, 22), Color.rgb(7, 7, 14))
         )
+        // soft coloured glow that follows the focused title
+        pageGlowBg.gradientType = GradientDrawable.RADIAL_GRADIENT
+        pageGlowBg.gradientRadius = screenW * 0.62f
+        applyPageTint(pageTint)
+        val glow = View(this)
+        glow.background = pageGlowBg
+        val gs = (screenW * 1.25f).toInt()
+        val glp = FrameLayout.LayoutParams(gs, gs, Gravity.TOP or Gravity.END)
+        glp.setMargins(0, -(screenW * 0.38f).toInt(), -(screenW * 0.30f).toInt(), 0)
+        layer.addView(glow, glp)
         pageTitle = TextView(this)
         pageTitle.setTextColor(Color.WHITE)
-        pageTitle.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.034f)
+        pageTitle.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.04f)
         pageTitle.typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        pageTitle.letterSpacing = 0.02f
+        pageTitle.setShadowLayer(16f, 0f, 4f, Color.argb(160, 0, 0, 0))
         val tlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
         tlp.setMargins(startX, (screenH * 0.15f).toInt(), 0, 0)
         layer.addView(pageTitle, tlp)
@@ -2837,7 +2878,7 @@ class MainActivity : Activity() {
                     for (h in lib) entries.add(PageEntry(hero = h))
                 }
                 entries.add(PageEntry(header = if (series) "TOP-RATED SERIES" else "TOP-RATED MOVIES"))
-                for (c in curated) entries.add(PageEntry(poster = c))
+                for ((ci, c) in curated.withIndex()) entries.add(PageEntry(poster = c, rank = ci + 1))
                 pageTitle.text = if (series) "Series" else "Movies"
                 pageSub.text = if (lib.isNotEmpty()) "Picked from your installed apps, plus the best of all time  \u00b7  press OK to watch"
                     else "The best of all time  \u00b7  press OK to watch"
@@ -2857,7 +2898,7 @@ class MainActivity : Activity() {
                     when {
                         e.header != null -> buildPageHeader(e.header)
                         e.hero != null -> buildLibCard(e.hero, posW, posH)
-                        else -> buildPoster(e.poster!!, series, posW, posH)
+                        else -> buildPoster(e.poster!!, series, posW, posH, e.rank)
                     }
                 }
             }
@@ -2871,6 +2912,26 @@ class MainActivity : Activity() {
         pageLayer.animate().alpha(1f).setDuration(200).start()
         pageRv.scrollToPosition(0)
         handler.postDelayed({ if (pageOpen) focusPageFirst() }, 150)
+    }
+
+    private fun applyPageTint(c: Int) {
+        pageGlowBg.setColors(intArrayOf(
+            Color.argb(105, Color.red(c), Color.green(c), Color.blue(c)),
+            Color.argb(0, Color.red(c), Color.green(c), Color.blue(c))
+        ))
+    }
+
+    private fun setPageTint(target: Int) {
+        if (target == pageTint) return
+        pageTintAnim?.cancel()
+        val a = ValueAnimator.ofObject(ArgbEvaluator(), pageTint, target)
+        a.duration = 380
+        a.addUpdateListener { v ->
+            pageTint = v.animatedValue as Int
+            applyPageTint(pageTint)
+        }
+        a.start()
+        pageTintAnim = a
     }
 
     private fun focusPageFirst() {
@@ -2920,20 +2981,42 @@ class MainActivity : Activity() {
             val lp = FrameLayout.LayoutParams(widthOf(position), WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             lp.topMargin = (gap * 0.6f).toInt()
             lp.bottomMargin = (gap * 0.6f).toInt()
-            slot.addView(build(position), lp)
+            val v = build(position)
+            slot.addView(v, lp)
+            if (position < 24) {
+                v.alpha = 0f
+                v.translationY = screenH * 0.04f
+                v.animate().alpha(1f).translationY(0f).setDuration(420)
+                    .setStartDelay(((position % 7) * 40 + (position / 7) * 60).toLong())
+                    .setInterpolator(DecelerateInterpolator(2f))
+                    .withEndAction { v.animate().setStartDelay(0).setInterpolator(null) }
+                    .start()
+            }
         }
     }
 
     private fun buildPageHeader(text: String): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(gap, (screenW * 0.010f).toInt(), gap, (screenW * 0.004f).toInt())
         val t = TextView(this)
         t.text = text
-        t.setTextColor(Color.argb(190, 255, 255, 255))
+        t.setTextColor(Color.argb(220, 255, 255, 255))
         t.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
         t.setTypeface(Typeface.DEFAULT_BOLD)
         t.letterSpacing = 0.3f
-        t.setPadding(gap, (screenW * 0.008f).toInt(), 0, (screenW * 0.004f).toInt())
-        t.isFocusable = false
-        return t
+        row.addView(t, LinearLayout.LayoutParams(WRAP, WRAP))
+        val line = View(this)
+        line.background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(Color.argb(90, 255, 255, 255), Color.TRANSPARENT)
+        )
+        val llp = LinearLayout.LayoutParams(0, 2, 1f)
+        llp.leftMargin = (screenW * 0.012f).toInt()
+        row.addView(line, llp)
+        row.isFocusable = false
+        return row
     }
 
     /** 16:9 card for something an installed app offers (movie / series); OK plays it in that app. */
@@ -2969,10 +3052,37 @@ class MainActivity : Activity() {
             ph.visibility = View.GONE
             img.animate().alpha(1f).setDuration(250).start()
         }
+        val shade = View(this)
+        shade.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.TRANSPARENT, Color.argb(150, 0, 0, 0))
+        )
+        card.addView(shade, FrameLayout.LayoutParams(MATCH, ch / 3, Gravity.BOTTOM))
+        if (app != null) {
+            // small app chip (which app this title comes from)
+            val chipS = (cw * 0.20f).toInt()
+            val chip = ImageView(this)
+            chip.setImageDrawable(app.art)
+            chip.scaleType = ImageView.ScaleType.FIT_CENTER
+            val cp = (chipS * 0.12f).toInt()
+            chip.setPadding(cp, cp, cp, cp)
+            val cb = GradientDrawable()
+            cb.cornerRadius = chipS * 0.26f
+            cb.setColor(Color.argb(200, 20, 20, 28))
+            cb.setStroke(1, Color.argb(80, 255, 255, 255))
+            chip.background = cb
+            val clp = FrameLayout.LayoutParams(chipS, chipS, Gravity.TOP or Gravity.END)
+            clp.setMargins(0, (gap * 0.5f).toInt(), (gap * 0.5f).toInt(), 0)
+            card.addView(chip, clp)
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            card.outlineSpotShadowColor = tint
+            card.outlineAmbientShadowColor = tint
+        }
         val ring = View(this)
         val ringBg = GradientDrawable()
         ringBg.cornerRadius = r
-        ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
+        ringBg.setStroke((screenW * 0.0024f).toInt().coerceAtLeast(3), Color.argb(235, 255, 255, 255))
         ringBg.setColor(Color.TRANSPARENT)
         ring.background = ringBg
         ring.alpha = 0f
@@ -3006,18 +3116,20 @@ class MainActivity : Activity() {
         col.pivotY = ch / 2f
         if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
         col.setOnFocusChangeListener { v, focused ->
-            val sc = if (focused) 1.06f else 1f
-            v.animate().scaleX(sc).scaleY(sc).setDuration(160).start()
+            val sc = if (focused) 1.1f else 1f
+            v.animate().scaleX(sc).scaleY(sc).setDuration(170).start()
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
+            card.animate().translationZ(if (focused) 26f else 0f).setDuration(170).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
+            if (focused) setPageTint(tint)
         }
         col.setOnClickListener { launchHero(item) }
         return col
     }
 
     /** Poster card for Movies / Series. Artwork is looked up online; until it arrives the card shows the title. */
-    private fun buildPoster(p: Poster, series: Boolean, cw: Int, ch: Int): View {
+    private fun buildPoster(p: Poster, series: Boolean, cw: Int, ch: Int, rank: Int = 0): View {
         val r = radius * 1.3f
         val hue = ((p.title.hashCode() and 0x7fffffff) % 360).toFloat()
         val tint = Color.HSVToColor(floatArrayOf(hue, 0.55f, 0.7f))
@@ -3073,11 +3185,38 @@ class MainActivity : Activity() {
             intArrayOf(Color.argb(40, 255, 255, 255), Color.TRANSPARENT)
         )
         card.addView(gloss, FrameLayout.LayoutParams(MATCH, ch / 3, Gravity.TOP))
+        val shade = View(this)
+        shade.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.TRANSPARENT, Color.argb(150, 0, 0, 0))
+        )
+        card.addView(shade, FrameLayout.LayoutParams(MATCH, ch / 3, Gravity.BOTTOM))
+        if (rank > 0) {
+            val badge = TextView(this)
+            badge.text = "#$rank"
+            badge.setTextColor(if (rank <= 3) GOLD else Color.WHITE)
+            badge.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0095f)
+            badge.setTypeface(Typeface.DEFAULT_BOLD)
+            val bb = GradientDrawable()
+            bb.cornerRadius = 100f
+            bb.setColor(Color.argb(150, 0, 0, 0))
+            bb.setStroke(1, if (rank <= 3) Color.argb(170, 255, 213, 74) else Color.argb(70, 255, 255, 255))
+            badge.background = bb
+            val hp = (screenW * 0.0065f).toInt()
+            badge.setPadding(hp, (hp * 0.35f).toInt(), hp, (hp * 0.35f).toInt())
+            val blp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
+            blp.setMargins((gap * 0.5f).toInt(), (gap * 0.5f).toInt(), 0, 0)
+            card.addView(badge, blp)
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            card.outlineSpotShadowColor = tint
+            card.outlineAmbientShadowColor = tint
+        }
 
         val ring = View(this)
         val ringBg = GradientDrawable()
         ringBg.cornerRadius = r
-        ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
+        ringBg.setStroke((screenW * 0.0024f).toInt().coerceAtLeast(3), Color.argb(235, 255, 255, 255))
         ringBg.setColor(Color.TRANSPARENT)
         ring.background = ringBg
         ring.alpha = 0f
@@ -3112,11 +3251,13 @@ class MainActivity : Activity() {
         col.pivotY = ch / 2f
         if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
         col.setOnFocusChangeListener { v, focused ->
-            val sc = if (focused) 1.08f else 1f
-            v.animate().scaleX(sc).scaleY(sc).setDuration(160).start()
+            val sc = if (focused) 1.1f else 1f
+            v.animate().scaleX(sc).scaleY(sc).setDuration(170).start()
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
+            card.animate().translationZ(if (focused) 26f else 0f).setDuration(170).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
+            if (focused) setPageTint(tint)
         }
         col.setOnClickListener { openTitle(p, series) }
         return col

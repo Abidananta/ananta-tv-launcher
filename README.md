@@ -127,3 +127,6 @@ If your previous Actions run stopped at **Set up Android SDK** with `Warning: Fa
 
 ## v13
 Movies / Series pages now start with **From your apps**: movies and series that your installed apps publish to Android TV (Netflix, Prime, YouTube etc.), mixed across apps. OK plays the item directly in that app. Below that, the top-rated list.
+
+## v17 (visual polish)
+Movies/Series: colour glow that follows the focused title, #rank badges (gold top 3), app chip on library cards, staggered entrance, tinted lift shadow. Home: hairline section headers, faint glass rim on tiles, bottom shade + tinted lift on Recently watched / Recommended cards, tinted lift on dock/All Apps tiles.
