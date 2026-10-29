@@ -685,8 +685,8 @@ class MainActivity : Activity() {
         screenH = dm.heightPixels
         outer = (screenW * 0.035f).toInt()
         gap = (screenW * 0.0115f).toInt()
-        tileW = (screenW * 0.100f).toInt()           // wider app tiles (was 0.088)
-        tileH = (tileW * 0.72f).toInt()          // taller app tiles (was 0.60)
+        tileW = (screenW * 0.118f).toInt()           // wider app tiles: exact 16:9 so TV banners fit with no crop
+        tileH = (tileW * 9f / 16f).toInt()      // 16:9 = Android TV banner ratio
         radius = screenW * 0.0095f
 
         // Dock geometry: no label inside the dock, so the icons sit exactly in the middle of the glass.
@@ -769,7 +769,7 @@ class MainActivity : Activity() {
         brandCard.addView(brandArt, FrameLayout.LayoutParams(MATCH, MATCH))
         brandCard.alpha = 0f
         val bw = (screenW * 0.23f).toInt()
-        val bh = (bw * 0.6f).toInt()
+        val bh = (bw * 9f / 16f).toInt()
         val brandLp = FrameLayout.LayoutParams(bw, bh, Gravity.TOP or Gravity.END)
         brandLp.setMargins(0, (screenH * 0.17f).toInt(), tileStartX, 0)
         heroLayer.addView(brandCard, brandLp)
@@ -1484,7 +1484,7 @@ class MainActivity : Activity() {
         brandBg.setColors(intArrayOf(withValue(app.tint, 0.80f, 1.1f), withValue(app.tint, 0.26f, 1.1f)))
         brandArt.setImageDrawable(app.art)
         if (app.isBanner) {
-            brandArt.scaleType = ImageView.ScaleType.CENTER_CROP
+            brandArt.scaleType = ImageView.ScaleType.FIT_CENTER
             brandArt.setPadding(0, 0, 0, 0)
         } else {
             brandArt.scaleType = ImageView.ScaleType.FIT_CENTER
@@ -2069,14 +2069,14 @@ class MainActivity : Activity() {
         val art = ImageView(this)
         art.setImageDrawable(app.art)
         if (app.isBanner) {
-            art.scaleType = ImageView.ScaleType.CENTER_CROP
+            art.scaleType = ImageView.ScaleType.FIT_CENTER   // never crop the banner
             art.layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         } else {
             art.scaleType = ImageView.ScaleType.FIT_CENTER
-            // Icon fills ~80% of the tile height. Adaptive icons only show the inner 72/108 of their
+            // Icon fills ~90% of the tile height. Adaptive icons only show the inner 72/108 of their
             // canvas (the rest is bleed outside the mask), so that canvas is enlarged to compensate;
             // the card's rounded clip trims anything beyond the tile.
-            val target = tileH * 0.80f
+            val target = tileH * 0.90f
             val adaptive = Build.VERSION.SDK_INT >= 26 && app.art is AdaptiveIconDrawable
             val s = (if (adaptive) target * 1.5f else target).toInt()
             art.layoutParams = FrameLayout.LayoutParams(s, s, Gravity.CENTER)
