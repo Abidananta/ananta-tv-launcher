@@ -681,6 +681,8 @@ class MainActivity : Activity() {
     private val navViews = ArrayList<View>()
     private val navPaint = ArrayList<(Boolean) -> Unit>()
     private val posterUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val posterMiss: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val lookupIo = Executors.newFixedThreadPool(2)   // poster lookups never block the artwork loader
 
     private val io = Executors.newFixedThreadPool(3)
     private val failed = HashSet<String>()
@@ -2750,7 +2752,7 @@ class MainActivity : Activity() {
         v.setOnClickListener { onClick() }
         v.setOnKeyListener { _, keyCode, ev ->
             if (ev.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                if (pageOpen) pageRv.getChildAt(0)?.requestFocus() else focusDock()
+                if (pageOpen) focusPageFirst() else focusDock()
                 true
             } else false
         }
@@ -2814,6 +2816,7 @@ class MainActivity : Activity() {
 
     private fun openPage(kind: Int) {
         if (wifiOpen) closeWifiPanel(false)
+        posterMiss.clear()
         val availW = screenW - 2 * outer + 2 * gap
         when (kind) {
             PAGE_APPS -> {
@@ -2838,28 +2841,22 @@ class MainActivity : Activity() {
                 pageTitle.text = if (series) "Series" else "Movies"
                 pageSub.text = if (lib.isNotEmpty()) "Picked from your installed apps, plus the best of all time  \u00b7  press OK to watch"
                     else "The best of all time  \u00b7  press OK to watch"
-                val cols = 12
-                val u = availW / cols
-                val libW = 3 * u - (gap * 1.2f).toInt()
-                val libH = (libW * 9f / 16f).toInt()
-                val posW = 2 * u - (gap * 1.2f).toInt()
+                val cols = 7
+                val slotPw = availW / cols
+                val posW = slotPw - (gap * 1.2f).toInt()
                 val posH = (posW * 1.5f).toInt()
                 val gm = GridLayoutManager(this, cols)
                 gm.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
-                    override fun getSpanSize(position: Int): Int {
-                        val e = entries[position]
-                        return if (e.header != null) cols else if (e.hero != null) 3 else 2
-                    }
+                    override fun getSpanSize(position: Int): Int = if (entries[position].header != null) cols else 1
                 }
                 pageRv.layoutManager = gm
-                pageRv.adapter = PageAdapter(entries.size, u, { i ->
-                    val e = entries[i]
-                    if (e.header != null) availW - gap * 2 else if (e.hero != null) libW else posW
+                pageRv.adapter = PageAdapter(entries.size, slotPw, { i ->
+                    if (entries[i].header != null) availW - gap * 2 else posW
                 }) { i ->
                     val e = entries[i]
                     when {
                         e.header != null -> buildPageHeader(e.header)
-                        e.hero != null -> buildLibCard(e.hero, libW, libH)
+                        e.hero != null -> buildLibCard(e.hero, posW, posH)
                         else -> buildPoster(e.poster!!, series, posW, posH)
                     }
                 }
@@ -2873,7 +2870,15 @@ class MainActivity : Activity() {
         pageLayer.visibility = View.VISIBLE
         pageLayer.animate().alpha(1f).setDuration(200).start()
         pageRv.scrollToPosition(0)
-        handler.postDelayed({ if (pageOpen) pageRv.getChildAt(0)?.requestFocus() }, 120)
+        handler.postDelayed({ if (pageOpen) focusPageFirst() }, 150)
+    }
+
+    private fun focusPageFirst() {
+        for (i in 0 until pageRv.childCount) {
+            val c = pageRv.getChildAt(i)
+            val target = (c as? ViewGroup)?.getChildAt(0) ?: c
+            if (target.isFocusable && target.requestFocus()) return
+        }
     }
 
     private fun closePage() {
@@ -2903,7 +2908,8 @@ class MainActivity : Activity() {
         override fun getItemCount() = n
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
             val slot = FrameLayout(parent.context)
-            slot.layoutParams = RecyclerView.LayoutParams(slotWpx, WRAP)
+            // MATCH: the GridLayoutManager gives each cell its span width; a fixed width here shifts the cards
+            slot.layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
             slot.clipChildren = false
             return object : RecyclerView.ViewHolder(slot) {}
         }
@@ -3056,7 +3062,7 @@ class MainActivity : Activity() {
         }
         val known = posterUrls[key]
         if (known != null) show(known)
-        else io.execute {
+        else if (!posterMiss.contains(key)) lookupIo.execute {
             val u = lookupPoster(p, series)
             if (u != null) runOnUiThread { if (img.contentDescription == p.title) show(u) }
         }
@@ -3237,6 +3243,7 @@ class MainActivity : Activity() {
     private fun lookupPoster(p: Poster, series: Boolean): String? {
         val key = (if (series) "s:" else "m:") + p.title
         posterUrls[key]?.let { return it }
+        if (posterMiss.contains(key)) return null
         try {
             val q = java.net.URLEncoder.encode(p.title, "UTF-8")
             val api = if (series) "https://itunes.apple.com/search?term=$q&media=tvShow&entity=tvSeason&limit=10&country=US"
@@ -3275,6 +3282,7 @@ class MainActivity : Activity() {
             return url
         } catch (e: Exception) {
             Log.w(TAG, "poster lookup failed for ${p.title}", e)
+            posterMiss.add(key)
             return null
         }
     }
