@@ -120,3 +120,10 @@ If your previous Actions run stopped at **Set up Android SDK** with `Warning: Fa
 - **Apps for you** row under Recommended: Play Store suggestions (apps not installed yet). OK opens the Play Store page to install. Edit `STORE_CATALOG` in `MainActivity.kt` to change the list.
 - Dock now loops: Right on the last app jumps to the first (Left on the first jumps to the last) instead of leaving the dock.
 - YouTube / YouTube Music hero follows what you played (Watch Next, most recent first), then the app's own picks.
+
+## v12: Movies / Series open in the OTT app
+- OK on a title opens it in the streaming app that has it (search deep link inside that app).
+- To know *which* app has the title, put a free TMDB API key in `TMDB_KEY` (`MainActivity.kt`, get it at themoviedb.org > Settings > API). Without a key, OK shows a list of your installed streaming apps to pick from.
+
+## v13
+Movies / Series pages now start with **From your apps**: movies and series that your installed apps publish to Android TV (Netflix, Prime, YouTube etc.), mixed across apps. OK plays the item directly in that app. Below that, the top-rated list.

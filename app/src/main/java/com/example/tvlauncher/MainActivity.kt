@@ -464,13 +464,16 @@ class MainActivity : Activity() {
         val images: List<String>,          // candidates, tried in order
         val intentUri: String?,
         val progress: Float = 0f,          // 0..1 watched (Watch Next only)
-        val engaged: Long = -1L            // last engagement time, for sorting "recent"
+        val engaged: Long = -1L,           // last engagement time, for sorting "recent"
+        val type: Int = -1                 // TvContract program type: 0 movie, 1-3 series/season/episode
     )
 
     class TvData(
         val hero: Map<String, List<HeroItem>>,
         val recent: List<HeroItem>,
-        val recommended: List<HeroItem>
+        val recommended: List<HeroItem>,
+        val movies: List<HeroItem> = emptyList(),
+        val series: List<HeroItem> = emptyList()
     )
 
     /** One entry of the Apple-TV-style Settings menu. */
@@ -671,6 +674,9 @@ class MainActivity : Activity() {
     private lateinit var pageSub: TextView
     private lateinit var pageRv: RecyclerView
     private var pageOpen = false
+    private var libMovies: List<HeroItem> = emptyList()
+    private var libSeries: List<HeroItem> = emptyList()
+    data class PageEntry(val header: String? = null, val hero: HeroItem? = null, val poster: Poster? = null)
     private var navSelected = 0
     private val navViews = ArrayList<View>()
     private val navPaint = ArrayList<(Boolean) -> Unit>()
@@ -1173,9 +1179,8 @@ class MainActivity : Activity() {
         v.setImageDrawable(d)
         v.scaleType = ImageView.ScaleType.FIT_CENTER
         v.setPadding(pad, pad, pad, pad)
-        val bg = GradientDrawable()
+        val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT))
         bg.shape = GradientDrawable.OVAL
-        bg.setColor(Color.TRANSPARENT)
         v.background = bg
         v.isFocusable = true
         v.isClickable = true
@@ -1183,8 +1188,8 @@ class MainActivity : Activity() {
         v.setOnFocusChangeListener { view, focused ->
             val s = if (focused) 1.08f else 1f
             view.animate().scaleX(s).scaleY(s).setDuration(150).start()
-            bg.setColor(if (focused) Color.argb(240, 255, 255, 255) else Color.TRANSPARENT)
-            if (whiteIcon) v.setColorFilter(if (focused) Color.BLACK else Color.WHITE)
+            glassFocus(bg, focused, false)
+            if (whiteIcon) v.setColorFilter(Color.WHITE)
         }
         v.setOnClickListener { onClick() }
         v.setOnKeyListener { _, keyCode, ev ->
@@ -1341,6 +1346,8 @@ class MainActivity : Activity() {
             val data = queryTv()
             runOnUiThread {
                 heroMap = data.hero
+                libMovies = data.movies
+                libSeries = data.series
                 // Only touch the rows when something changed, otherwise the focused card would lose focus.
                 if (feedKey(recentItems) != feedKey(data.recent)) {
                     recentItems.clear()
@@ -1378,6 +1385,8 @@ class MainActivity : Activity() {
         val hero = LinkedHashMap<String, MutableList<HeroItem>>()
         val recent = ArrayList<HeroItem>()
         val previewByPkg = LinkedHashMap<String, MutableList<HeroItem>>()
+        val libMovieBy = LinkedHashMap<String, MutableList<HeroItem>>()
+        val libSeriesBy = LinkedHashMap<String, MutableList<HeroItem>>()
         if (Build.VERSION.SDK_INT < 26) return TvData(hero, recent, emptyList())
 
         val sources = listOf(
@@ -1413,8 +1422,17 @@ class MainActivity : Activity() {
                             images,
                             cur.str("intent_uri"),
                             progress,
-                            cur.lng("last_engagement_time_utc_millis")
+                            cur.lng("last_engagement_time_utc_millis"),
+                            cur.num("type")
                         )
+                        // library of every installed app, split into movies and series (for the Movies / Series pages)
+                        val tp = item.type
+                        val libTitle = item.title
+                        if (!libTitle.isNullOrBlank() && (tp == 0 || tp == 1 || tp == 2 || tp == 3)) {
+                            val lib = if (tp == 0) libMovieBy else libSeriesBy
+                            val l2 = lib.getOrPut(pkg) { mutableListOf() }
+                            if (l2.size < 30 && l2.none { it.title == libTitle }) l2.add(item)
+                        }
                         // hero artwork (per app)
                         val items = hero.getOrPut(pkg) { mutableListOf() }
                         if (items.size < 8 && items.none { it.images[0] == images[0] }) items.add(item)
@@ -1470,7 +1488,18 @@ class MainActivity : Activity() {
             round++
         }
         Log.i(TAG, "hero per app: " + hero.mapValues { it.value.size } + " recent=" + recentOut.size + " rec=" + rec.size)
-        return TvData(hero, recentOut, rec)
+        fun weave(m: Map<String, List<HeroItem>>): List<HeroItem> {
+            val out = ArrayList<HeroItem>()
+            var rd = 0
+            var more = true
+            while (more && out.size < 48) {
+                more = false
+                for ((_, l) in m) if (rd < l.size && out.size < 48) { out.add(l[rd]); more = true }
+                rd++
+            }
+            return out
+        }
+        return TvData(hero, recentOut, rec, weave(libMovieBy), weave(libSeriesBy))
     }
 
     private fun launchHero(item: HeroItem?) {
@@ -2680,9 +2709,8 @@ class MainActivity : Activity() {
 
     /** One nav button: round icon (Home, All Apps) or text pill (Movies, Series), same look as the Wi-Fi / Settings buttons. */
     private fun navButton(idx: Int, icon: Drawable?, label: String?, box: Int, pad: Int, onClick: () -> Unit): View {
-        val bg = GradientDrawable()
+        val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT))
         bg.cornerRadius = 200f
-        bg.setColor(Color.TRANSPARENT)
         val v: View
         val tintIt: (Int) -> Unit
         if (icon != null) {
@@ -2708,12 +2736,8 @@ class MainActivity : Activity() {
         v.isClickable = true
         if (Build.VERSION.SDK_INT >= 26) v.defaultFocusHighlightEnabled = false
         val paint: (Boolean) -> Unit = { focused ->
-            bg.setColor(
-                if (focused) Color.argb(240, 255, 255, 255)
-                else if (navSelected == idx) Color.argb(75, 255, 255, 255)
-                else Color.TRANSPARENT
-            )
-            tintIt(if (focused) Color.BLACK else Color.WHITE)
+            glassFocus(bg, focused, navSelected == idx)
+            tintIt(Color.WHITE)
         }
         navViews.add(v)
         navPaint.add(paint)
@@ -2731,6 +2755,20 @@ class MainActivity : Activity() {
             } else false
         }
         return v
+    }
+
+    /** Frosted-glass highlight: translucent white sheen with a thin bright rim (no solid white block). */
+    private fun glassFocus(bg: GradientDrawable, focused: Boolean, selected: Boolean) {
+        if (focused) {
+            bg.setColors(intArrayOf(Color.argb(120, 255, 255, 255), Color.argb(45, 255, 255, 255)))
+            bg.setStroke(2, Color.argb(190, 255, 255, 255))
+        } else if (selected) {
+            bg.setColors(intArrayOf(Color.argb(60, 255, 255, 255), Color.argb(22, 255, 255, 255)))
+            bg.setStroke(2, Color.argb(80, 255, 255, 255))
+        } else {
+            bg.setColors(intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT))
+            bg.setStroke(0, Color.TRANSPARENT)
+        }
     }
 
     private fun setNavSelected(idx: Int) {
@@ -2784,20 +2822,47 @@ class MainActivity : Activity() {
                 pageSub.text = "${list.size} installed apps"
                 val cols = (availW / slotW).coerceAtLeast(1)
                 pageRv.layoutManager = GridLayoutManager(this, cols)
-                pageRv.adapter = PageAdapter(list.size, availW / cols, tileW) { buildTile(list[it], -1) }
+                pageRv.adapter = PageAdapter(list.size, availW / cols, { tileW }) { buildTile(list[it], -1) }
             }
             else -> {
                 val series = kind == PAGE_SERIES
-                val list = if (series) SERIES else MOVIES
-                pageTitle.text = if (series) "Best Series" else "Best Movies"
-                pageSub.text = (if (series) "Top-rated TV series of all time" else "Top-rated movies of all time") +
-                    "  ·  press OK to watch the trailer"
-                val cols = 7
-                val slotPw = availW / cols
-                val cw = slotPw - (gap * 1.2f).toInt()
-                val ch = (cw * 1.5f).toInt()
-                pageRv.layoutManager = GridLayoutManager(this, cols)
-                pageRv.adapter = PageAdapter(list.size, slotPw, cw) { buildPoster(list[it], series, cw, ch) }
+                val lib = if (series) libSeries else libMovies
+                val curated = if (series) SERIES else MOVIES
+                val entries = ArrayList<PageEntry>()
+                if (lib.isNotEmpty()) {
+                    entries.add(PageEntry(header = "FROM YOUR APPS"))
+                    for (h in lib) entries.add(PageEntry(hero = h))
+                }
+                entries.add(PageEntry(header = if (series) "TOP-RATED SERIES" else "TOP-RATED MOVIES"))
+                for (c in curated) entries.add(PageEntry(poster = c))
+                pageTitle.text = if (series) "Series" else "Movies"
+                pageSub.text = if (lib.isNotEmpty()) "Picked from your installed apps, plus the best of all time  \u00b7  press OK to watch"
+                    else "The best of all time  \u00b7  press OK to watch"
+                val cols = 12
+                val u = availW / cols
+                val libW = 3 * u - (gap * 1.2f).toInt()
+                val libH = (libW * 9f / 16f).toInt()
+                val posW = 2 * u - (gap * 1.2f).toInt()
+                val posH = (posW * 1.5f).toInt()
+                val gm = GridLayoutManager(this, cols)
+                gm.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+                    override fun getSpanSize(position: Int): Int {
+                        val e = entries[position]
+                        return if (e.header != null) cols else if (e.hero != null) 3 else 2
+                    }
+                }
+                pageRv.layoutManager = gm
+                pageRv.adapter = PageAdapter(entries.size, u, { i ->
+                    val e = entries[i]
+                    if (e.header != null) availW - gap * 2 else if (e.hero != null) libW else posW
+                }) { i ->
+                    val e = entries[i]
+                    when {
+                        e.header != null -> buildPageHeader(e.header)
+                        e.hero != null -> buildLibCard(e.hero, libW, libH)
+                        else -> buildPoster(e.poster!!, series, posW, posH)
+                    }
+                }
             }
         }
         pageOpen = true
@@ -2832,7 +2897,7 @@ class MainActivity : Activity() {
     inner class PageAdapter(
         private val n: Int,
         private val slotWpx: Int,
-        private val itemW: Int,
+        private val widthOf: (Int) -> Int,
         private val build: (Int) -> View
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         override fun getItemCount() = n
@@ -2846,11 +2911,103 @@ class MainActivity : Activity() {
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
             val slot = holder.itemView as FrameLayout
             slot.removeAllViews()
-            val lp = FrameLayout.LayoutParams(itemW, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            val lp = FrameLayout.LayoutParams(widthOf(position), WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             lp.topMargin = (gap * 0.6f).toInt()
             lp.bottomMargin = (gap * 0.6f).toInt()
             slot.addView(build(position), lp)
         }
+    }
+
+    private fun buildPageHeader(text: String): View {
+        val t = TextView(this)
+        t.text = text
+        t.setTextColor(Color.argb(190, 255, 255, 255))
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+        t.setTypeface(Typeface.DEFAULT_BOLD)
+        t.letterSpacing = 0.3f
+        t.setPadding(gap, (screenW * 0.008f).toInt(), 0, (screenW * 0.004f).toInt())
+        t.isFocusable = false
+        return t
+    }
+
+    /** 16:9 card for something an installed app offers (movie / series); OK plays it in that app. */
+    private fun buildLibCard(item: HeroItem, cw: Int, ch: Int): View {
+        val app = appByPkg[item.pkg]
+        val tint = app?.tint ?: defaultTint
+        val r = radius * 1.3f
+        val card = FrameLayout(this)
+        card.layoutParams = LinearLayout.LayoutParams(cw, ch)
+        val cardBg = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(withValue(tint, 0.55f, 1.1f), withValue(tint, 0.22f, 1.1f))
+        )
+        cardBg.cornerRadius = r
+        card.background = cardBg
+        card.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, r)
+            }
+        }
+        card.clipToOutline = true
+
+        val ph = ImageView(this)
+        if (app != null) ph.setImageDrawable(app.art)
+        ph.scaleType = ImageView.ScaleType.FIT_CENTER
+        val ps = (ch * 0.4f).toInt()
+        card.addView(ph, FrameLayout.LayoutParams(ps, ps, Gravity.CENTER))
+        val img = ImageView(this)
+        img.scaleType = ImageView.ScaleType.CENTER_CROP
+        img.alpha = 0f
+        card.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
+        loadInto(img, item.images, (cw * 1.3f).toInt()) {
+            ph.visibility = View.GONE
+            img.animate().alpha(1f).setDuration(250).start()
+        }
+        val ring = View(this)
+        val ringBg = GradientDrawable()
+        ringBg.cornerRadius = r
+        ringBg.setStroke((screenW * 0.0022f).toInt().coerceAtLeast(3), Color.WHITE)
+        ringBg.setColor(Color.TRANSPARENT)
+        ring.background = ringBg
+        ring.alpha = 0f
+        card.addView(ring, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        val title = TextView(this)
+        title.text = item.title.orEmpty()
+        title.setTextColor(Color.WHITE)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        title.setTypeface(Typeface.DEFAULT_BOLD)
+        title.maxLines = 1
+        title.ellipsize = TextUtils.TruncateAt.END
+        title.alpha = 0.8f
+        title.setPadding(0, (screenW * 0.006f).toInt(), 0, 0)
+        val sub = TextView(this)
+        sub.text = "on " + (app?.label ?: item.pkg)
+        sub.setTextColor(Color.argb(150, 255, 255, 255))
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0095f)
+        sub.maxLines = 1
+        sub.ellipsize = TextUtils.TruncateAt.END
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.clipChildren = false
+        col.isFocusable = true
+        col.isClickable = true
+        col.addView(card)
+        col.addView(title, LinearLayout.LayoutParams(cw, WRAP))
+        col.addView(sub, LinearLayout.LayoutParams(cw, WRAP))
+        col.pivotX = cw / 2f
+        col.pivotY = ch / 2f
+        if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
+        col.setOnFocusChangeListener { v, focused ->
+            val sc = if (focused) 1.06f else 1f
+            v.animate().scaleX(sc).scaleY(sc).setDuration(160).start()
+            (v.parent as? View)?.translationZ = if (focused) 20f else 0f
+            ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
+        }
+        col.setOnClickListener { launchHero(item) }
+        return col
     }
 
     /** Poster card for Movies / Series. Artwork is looked up online; until it arrives the card shows the title. */
@@ -2955,7 +3112,7 @@ class MainActivity : Activity() {
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
         }
-        col.setOnClickListener { openTrailer(p, series) }
+        col.setOnClickListener { openTitle(p, series) }
         return col
     }
 
@@ -2967,6 +3124,112 @@ class MainActivity : Activity() {
             startActivity(i)
         } catch (e: Exception) {
             Toast.makeText(this, "Install YouTube to watch trailers", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // =====================================================================
+    // Movies / Series -> open in the OTT app that has the title
+    // =====================================================================
+
+    /** Free key from themoviedb.org (Settings > API). With it the launcher knows which OTT streams a title. */
+    private val TMDB_KEY = ""
+
+    data class Ott(val label: String, val pkg: String, val tmdbName: String, val searchUrl: String)
+
+    private val OTT_APPS = listOf(
+        Ott("Netflix", "com.netflix.ninja", "netflix", "https://www.netflix.com/search?q=%s"),
+        Ott("Prime Video", "com.amazon.amazonvideo.livingroom", "amazon prime", "https://www.primevideo.com/search/?phrase=%s"),
+        Ott("Disney+", "com.disney.disneyplus", "disney plus", "https://www.disneyplus.com/search?q=%s"),
+        Ott("Disney+ Hotstar", "in.startv.hotstar", "hotstar", "https://www.hotstar.com/in/search?q=%s"),
+        Ott("Max", "com.wbd.stream", "max", "https://play.max.com/search?q=%s"),
+        Ott("Apple TV", "com.apple.atve.androidtv.appletv", "apple tv", "https://tv.apple.com/search?term=%s"),
+        Ott("YouTube", "com.google.android.youtube.tv", "youtube", "https://www.youtube.com/results?search_query=%s")
+    )
+
+    private fun openTitle(p: Poster, series: Boolean) {
+        Toast.makeText(this, "Finding where to watch ${p.title}...", Toast.LENGTH_SHORT).show()
+        io.execute {
+            val names = tmdbProviders(p, series)       // lower-case provider names, empty when unknown
+            runOnUiThread {
+                val installed = OTT_APPS.filter { isInstalled(it.pkg) }
+                var matches = if (names.isEmpty()) emptyList()
+                else installed.filter { o -> names.any { n -> n.contains(o.tmdbName) } }
+                val known = matches.isNotEmpty()
+                if (!known) matches = installed.filter { it.pkg != "com.google.android.youtube.tv" }
+                when {
+                    known && matches.size == 1 -> openInOtt(matches[0], p)
+                    matches.isEmpty() -> openTrailer(p, series)
+                    else -> {
+                        val labels = ArrayList<String>()
+                        for (m in matches) labels.add("Watch on " + m.label)
+                        labels.add("Watch trailer on YouTube")
+                        android.app.AlertDialog.Builder(this)
+                            .setTitle(p.title + "  (" + p.year + ")")
+                            .setItems(labels.toTypedArray()) { _, which ->
+                                if (which < matches.size) openInOtt(matches[which], p) else openTrailer(p, series)
+                            }
+                            .show()
+                    }
+                }
+            }
+        }
+    }
+
+    /** Opens the OTT app on a search for the title; if the app refuses the link, just opens the app. */
+    private fun openInOtt(o: Ott, p: Poster) {
+        try {
+            val q = java.net.URLEncoder.encode(p.title, "UTF-8")
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(o.searchUrl.replace("%s", q)))
+            i.setPackage(o.pkg)
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(i)
+        } catch (e: Exception) {
+            val i = packageManager.getLeanbackLaunchIntentForPackage(o.pkg) ?: packageManager.getLaunchIntentForPackage(o.pkg)
+            if (i != null) {
+                startActivity(i)
+                Toast.makeText(this, "Search for \"${p.title}\" in ${o.label}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /** Names (lower-case) of the streaming services that carry the title, via TMDB. Needs [TMDB_KEY]. */
+    private fun tmdbProviders(p: Poster, series: Boolean): List<String> {
+        if (TMDB_KEY.isEmpty()) return emptyList()
+        try {
+            val kind = if (series) "tv" else "movie"
+            val q = java.net.URLEncoder.encode(p.title, "UTF-8")
+            val yearParam = if (series) "first_air_date_year" else "year"
+            val search = httpText("https://api.themoviedb.org/3/search/$kind?api_key=$TMDB_KEY&query=$q&$yearParam=${p.year}")
+                ?: return emptyList()
+            val results = org.json.JSONObject(search).optJSONArray("results") ?: return emptyList()
+            if (results.length() == 0) return emptyList()
+            val id = results.getJSONObject(0).optInt("id", -1)
+            if (id < 0) return emptyList()
+            val prov = httpText("https://api.themoviedb.org/3/$kind/$id/watch/providers?api_key=$TMDB_KEY") ?: return emptyList()
+            val all = org.json.JSONObject(prov).optJSONObject("results") ?: return emptyList()
+            val region = java.util.Locale.getDefault().country.ifEmpty { "US" }
+            val out = ArrayList<String>()
+            for (code in listOf(region, "US")) {
+                val flat = all.optJSONObject(code)?.optJSONArray("flatrate") ?: continue
+                for (i in 0 until flat.length()) out.add(flat.getJSONObject(i).optString("provider_name").lowercase())
+                if (out.isNotEmpty()) break
+            }
+            return out
+        } catch (e: Exception) {
+            Log.w(TAG, "TMDB lookup failed for ${p.title}", e)
+            return emptyList()
+        }
+    }
+
+    private fun httpText(url: String): String? {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 10000
+        conn.readTimeout = 15000
+        conn.setRequestProperty("User-Agent", UA)
+        return try {
+            if (conn.responseCode !in 200..299) null else conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
         }
     }
 
