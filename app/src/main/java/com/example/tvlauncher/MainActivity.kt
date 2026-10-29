@@ -46,6 +46,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
@@ -701,7 +702,7 @@ class MainActivity : Activity() {
         // Every block (hero text, dock glass, row titles, first card, top bar) shares the same left and
         // right edge: the edge of the glass dock. Nothing sticks out further left or right than the dock.
         val tileStartX = outer
-        val dockTop = (screenH * 0.515f).toInt()     // dock sits low (a bit higher now: the tiles are taller)
+        val dockTop = (screenH * 0.60f).toInt()      // dock sits lower so the hero slider (artwork + text + dots) has room to breathe
         dockTopPx = dockTop
 
         // Feed cards (Recently watched / Recommended)
@@ -2072,7 +2073,12 @@ class MainActivity : Activity() {
             art.layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         } else {
             art.scaleType = ImageView.ScaleType.FIT_CENTER
-            val s = (tileH * 0.58f).toInt()
+            // Icon fills ~80% of the tile height. Adaptive icons only show the inner 72/108 of their
+            // canvas (the rest is bleed outside the mask), so that canvas is enlarged to compensate;
+            // the card's rounded clip trims anything beyond the tile.
+            val target = tileH * 0.80f
+            val adaptive = Build.VERSION.SDK_INT >= 26 && app.art is AdaptiveIconDrawable
+            val s = (if (adaptive) target * 1.5f else target).toInt()
             art.layoutParams = FrameLayout.LayoutParams(s, s, Gravity.CENTER)
         }
 
