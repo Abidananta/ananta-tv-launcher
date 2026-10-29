@@ -5,12 +5,10 @@ Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cin
 ## What's new in v4
 
 - **Alignment**: hero text, dock glass, row titles, the first card of every row and the top bar now share the same left/right edge (the edge of the dock glass). Dock app tiles are taller (aspect 0.74 instead of 0.60).
-- **Settings, new design everywhere you can change something** (Settings > ...). These pages are built into the launcher and no longer open the Android screen:
-  - General > **Date and Time** (automatic date/time, time zone list, automatic time zone, 24-hour clock), **Storage**, **About**
-  - Video and Audio > **Sound** (volume: Left/Right, OK = mute)
-  - **Network** (Wi-Fi on/off, connected network, IP address, Available Networks)
-  - **Remotes and Devices** (Bluetooth on/off, paired devices)
-  - Still open the Android screen: Language, Keyboard, Accessibility, Users and Accounts, Video and Display, Screen Saver, Apps, System, Pair New Device.
+- **Settings: every page is in the new design** (no Android screen in between): Date and Time, Language, Keyboard, Storage, Accessibility (text size), About, Accounts, Sound, Video and Display, Screen Saver (+ start-after), Bluetooth (on/off, paired list, pair new device), Apps (open, move dock/all apps, uninstall), Network, Home Screen, System.
+  - Only rows marked "Opens Android" leave the launcher, for things Android gives apps no API for (change system language, add account, developer options, all settings).
+  - Some switches need a one-time permission from a PC (the page tells you the command).
+- **Icons** in the dock are wider and taller (tile width 8.8% -> 10% of screen).
 - **Wi-Fi dropdown** now scans properly: it re-registers its receiver after the permission dialog, rescans every 30 s, has a **Scan again** row, and tells you when Location access / Location itself is the reason the list is empty.
 
 ### One-time setup from a PC (optional, unlocks switches Android protects)
@@ -18,8 +16,8 @@ Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cin
 Package id is `com.example.tvlauncher` (see `app/build.gradle.kts`).
 
 ```
-adb shell pm grant com.example.tvlauncher android.permission.WRITE_SECURE_SETTINGS   # automatic date/time + automatic time zone switches
-adb shell appops set com.example.tvlauncher WRITE_SETTINGS allow                    # lets the 24-hour switch also change Android's own setting
+adb shell pm grant com.example.tvlauncher android.permission.WRITE_SECURE_SETTINGS   # automatic date/time, time zone, keyboard, screen saver switches
+adb shell appops set com.example.tvlauncher WRITE_SETTINGS allow                    # 24-hour switch, text size, screen-off timeout
 ```
 
 Android never lets a normal app set the clock by hand (needs a system-only permission), so *Date* and *Time* are display-only; use Automatic Date and Time.

@@ -684,8 +684,8 @@ class MainActivity : Activity() {
         screenH = dm.heightPixels
         outer = (screenW * 0.035f).toInt()
         gap = (screenW * 0.0115f).toInt()
-        tileW = (screenW * 0.088f).toInt()
-        tileH = (tileW * 0.74f).toInt()          // taller app tiles (was 0.60)
+        tileW = (screenW * 0.100f).toInt()           // wider app tiles (was 0.088)
+        tileH = (tileW * 0.72f).toInt()          // taller app tiles (was 0.60)
         radius = screenW * 0.0095f
 
         // Dock geometry: no label inside the dock, so the icons sit exactly in the middle of the glass.
@@ -701,7 +701,7 @@ class MainActivity : Activity() {
         // Every block (hero text, dock glass, row titles, first card, top bar) shares the same left and
         // right edge: the edge of the glass dock. Nothing sticks out further left or right than the dock.
         val tileStartX = outer
-        val dockTop = (screenH * 0.535f).toInt()     // dock sits low (a bit higher now: the tiles are taller)
+        val dockTop = (screenH * 0.515f).toInt()     // dock sits low (a bit higher now: the tiles are taller)
         dockTopPx = dockTop
 
         // Feed cards (Recently watched / Recommended)
@@ -1247,6 +1247,7 @@ class MainActivity : Activity() {
         handler.removeCallbacks(statusTick)
         handler.removeCallbacks(wifiTick)
         unregisterWifiReceiver()
+        stopBtDiscovery()
         super.onPause()
     }
 
@@ -2889,29 +2890,34 @@ class MainActivity : Activity() {
             SItem("General", 0, Color.parseColor("#8e8e93"), sub = {
                 listOf(
                     SItem("Date and Time", value = zoneLabel(TimeZone.getDefault().id), sub = { dateTimeItems() }),
-                    SItem("Language", value = Locale.getDefault().displayLanguage, action = sys(Settings.ACTION_LOCALE_SETTINGS)),
-                    SItem("Keyboard", action = sys(Settings.ACTION_INPUT_METHOD_SETTINGS)),
+                    SItem("Language", value = Locale.getDefault().displayLanguage, sub = { languageItems() }),
+                    SItem("Keyboard", sub = { keyboardItems() }),
                     SItem("Storage", sub = { storageItems() }),
-                    SItem("Accessibility", action = sys(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
+                    SItem("Accessibility", sub = { accessibilityItems() }),
                     SItem("About", sub = { aboutItems() })
                 )
             }),
-            SItem("Users and Accounts", 1, Color.parseColor("#3478f6"), value = acct,
-                action = sys(Settings.ACTION_SYNC_SETTINGS)),
+            SItem("Users and Accounts", 1, Color.parseColor("#3478f6"), value = acct, sub = { accountItems() }),
             SItem("Video and Audio", 2, Color.parseColor("#30a46c"), sub = {
                 listOf(
                     SItem("Sound", sub = { soundItems() }),
-                    SItem("Video and Display", action = sys(Settings.ACTION_DISPLAY_SETTINGS))
+                    SItem("Video and Display", sub = { displayItems() })
                 )
             }),
-            SItem("Screen Saver", 3, Color.parseColor("#af52de"), action = sys(Settings.ACTION_DREAM_SETTINGS)),
+            SItem("Screen Saver", 3, Color.parseColor("#af52de"), sub = { screenSaverItems() }),
             SItem("Remotes and Devices", 4, Color.parseColor("#ff9f0a"), sub = { bluetoothItems() }),
-            SItem("Apps", 5, Color.parseColor("#0a84ff"), action = sys(Settings.ACTION_APPLICATION_SETTINGS)),
+            SItem("Apps", 5, Color.parseColor("#0a84ff"), sub = { appsItems() }),
             SItem("Network", 6, Color.parseColor("#30b0c7"), value = net, sub = { networkItems() }),
             SItem("Home Screen", 8, Color.parseColor("#ff375f"), sub = {
                 listOf(SItem("Reset Dock and All Apps", action = { resetLayout() }))
             }),
-            SItem("System", 7, Color.parseColor("#636366"), value = "Android Settings", action = sys(Settings.ACTION_SETTINGS))
+            SItem("System", 7, Color.parseColor("#636366"), sub = {
+                listOf(
+                    SItem("About", sub = { aboutItems() }),
+                    androidRow("Developer Options", Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+                    androidRow("All Android Settings", Settings.ACTION_SETTINGS)
+                )
+            })
         )
     }
 
@@ -3148,6 +3154,303 @@ class MainActivity : Activity() {
         return items
     }
 
+    // ---- generic setting writers (each explains the one-time adb step when Android says no) ----------
+
+    private fun secureInt(name: String, def: Int): Int =
+        try {
+            Settings.Secure.getInt(contentResolver, name, def)
+        } catch (e: Exception) {
+            def
+        }
+
+    private fun needSecureToast() =
+        toast("One-time setup needed. On a PC run:  adb shell pm grant $packageName $SECURE_PERM")
+
+    private fun putSecureInt(name: String, v: Int): Boolean =
+        try {
+            Settings.Secure.putInt(contentResolver, name, v)
+        } catch (e: SecurityException) {
+            needSecureToast()
+            false
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun putSecureString(name: String, v: String): Boolean =
+        try {
+            Settings.Secure.putString(contentResolver, name, v)
+        } catch (e: SecurityException) {
+            needSecureToast()
+            false
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun canWriteSystem(): Boolean {
+        val ok = Build.VERSION.SDK_INT < 23 || Settings.System.canWrite(this)
+        if (!ok) toast("One-time setup needed. On a PC run:  adb shell appops set $packageName WRITE_SETTINGS allow")
+        return ok
+    }
+
+    private fun putSystemInt(name: String, v: Int): Boolean =
+        try {
+            canWriteSystem() && Settings.System.putInt(contentResolver, name, v)
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun putSystemFloat(name: String, v: Float): Boolean =
+        try {
+            canWriteSystem() && Settings.System.putFloat(contentResolver, name, v)
+        } catch (e: Exception) {
+            false
+        }
+
+    /** Row that hands over to an Android screen. Only used where Android gives apps no other way. */
+    private fun androidRow(title: String, action: String): SItem =
+        SItem(title, value = "Opens Android", action = sys(action))
+
+    // ---- Language -------------------------------------------------------------
+
+    private fun languageItems(): List<SItem> {
+        val l = Locale.getDefault()
+        return listOf(
+            SItem("Language", value = l.displayLanguage),
+            SItem("Region", value = l.displayCountry.ifEmpty { "-" }),
+            SItem("Android does not let apps switch the system language, so this page only shows it.", note = true),
+            androidRow("Change Language", Settings.ACTION_LOCALE_SETTINGS)
+        )
+    }
+
+    // ---- Keyboard ---------------------------------------------------------------
+
+    private fun keyboardItems(): List<SItem> {
+        val items = ArrayList<SItem>()
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            val cur = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+            for (ime in imm.enabledInputMethodList) {
+                val id = ime.id
+                items.add(SItem(ime.loadLabel(packageManager).toString(), checked = id == cur, action = {
+                    putSecureString(Settings.Secure.DEFAULT_INPUT_METHOD, id)
+                }))
+            }
+        } catch (e: Exception) {
+            items.add(SItem("Keyboards are not available on this device.", note = true))
+        }
+        if (!canWriteSecure()) {
+            items.add(SItem("To switch keyboard, run once on a PC:  adb shell pm grant $packageName $SECURE_PERM", note = true))
+        }
+        items.add(androidRow("Add or Remove Keyboards", Settings.ACTION_INPUT_METHOD_SETTINGS))
+        return items
+    }
+
+    // ---- Accessibility (text size) -----------------------------------------------
+
+    private fun accessibilityItems(): List<SItem> {
+        val cur = try { Settings.System.getFloat(contentResolver, Settings.System.FONT_SCALE, 1f) } catch (e: Exception) { 1f }
+        val sizes = listOf("Small" to 0.85f, "Default" to 1f, "Large" to 1.15f, "Largest" to 1.3f)
+        val label = sizes.minByOrNull { Math.abs(it.second - cur) }?.first ?: "Default"
+        return listOf(
+            SItem("Text Size", value = label, sub = {
+                sizes.map { (name, v) ->
+                    SItem(name, checked = Math.abs(v - cur) < 0.04f, action = {
+                        if (putSystemFloat(Settings.System.FONT_SCALE, v)) settingsBack()
+                    })
+                }
+            }),
+            androidRow("More Accessibility Options", Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        )
+    }
+
+    // ---- Accounts ---------------------------------------------------------------
+
+    private fun accountItems(): List<SItem> {
+        val items = ArrayList<SItem>()
+        try {
+            if (hasAccountsPermission()) {
+                for (a in AccountManager.get(this).accounts) {
+                    items.add(SItem(a.name, value = if (a.type == "com.google") "Google" else a.type))
+                }
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+        if (items.isEmpty()) items.add(SItem("No accounts found", note = true))
+        items.add(androidRow("Add Account", Settings.ACTION_ADD_ACCOUNT))
+        return items
+    }
+
+    // ---- Screen saver / sleep --------------------------------------------------
+
+    private fun screenSaverItems(): List<SItem> {
+        val on = secureInt("screensaver_enabled", 1) == 1
+        val timeout = try { Settings.System.getInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 600000) } catch (e: Exception) { 600000 }
+        val opts = listOf("1 minute" to 60000, "5 minutes" to 300000, "15 minutes" to 900000,
+            "30 minutes" to 1800000, "1 hour" to 3600000, "Never" to Int.MAX_VALUE)
+        val label = opts.firstOrNull { it.second == timeout }?.first ?: (timeout / 60000).toString() + " minutes"
+        val items = ArrayList<SItem>()
+        items.add(SItem("Screen Saver", value = onOff(on), action = { putSecureInt("screensaver_enabled", if (on) 0 else 1) }))
+        items.add(SItem("Start After", value = label, sub = {
+            opts.map { (name, ms) ->
+                SItem(name, checked = ms == timeout, action = {
+                    if (putSystemInt(Settings.System.SCREEN_OFF_TIMEOUT, ms)) settingsBack()
+                })
+            }
+        }))
+        if (!canWriteSecure()) {
+            items.add(SItem("To change these, run once on a PC:  adb shell pm grant $packageName $SECURE_PERM  and  adb shell appops set $packageName WRITE_SETTINGS allow", note = true))
+        }
+        return items
+    }
+
+    // ---- Video and Display ------------------------------------------------------
+
+    @Suppress("DEPRECATION")
+    private fun displayItems(): List<SItem> {
+        val items = ArrayList<SItem>()
+        try {
+            val d = (getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay
+            val size = android.graphics.Point()
+            d.getRealSize(size)
+            items.add(SItem("Resolution", value = size.x.toString() + " x " + size.y))
+            items.add(SItem("Refresh Rate", value = String.format(Locale.US, "%.0f Hz", d.refreshRate)))
+            items.add(SItem("Screen Density", value = resources.displayMetrics.densityDpi.toString() + " dpi"))
+        } catch (e: Exception) {
+            items.add(SItem("Display information is not available.", note = true))
+        }
+        items.add(SItem("Resolution and HDR are decided by your TV and box. Android does not let apps change them.", note = true))
+        items.add(androidRow("Advanced Display Options", Settings.ACTION_DISPLAY_SETTINGS))
+        return items
+    }
+
+    // ---- Apps ---------------------------------------------------------------------
+
+    private fun appsItems(): List<SItem> =
+        allApps.filter { it.pkg != SETTINGS_PKG }
+            .sortedBy { it.label.lowercase() }
+            .map { a -> SItem(a.label, sub = { appDetailItems(a) }) }
+
+    private fun appDetailItems(a: AppItem): List<SItem> {
+        val inDock = isOtt(a)
+        val ver = try { packageManager.getPackageInfo(a.pkg, 0).versionName ?: "" } catch (e: Exception) { "" }
+        return listOf(
+            SItem("Open", action = {
+                closeSettings(false)
+                launchApp(a)
+            }),
+            SItem("Show In", value = if (inDock) "Dock" else "All Apps", action = {
+                if (inDock) {
+                    forceGrid.add(a.pkg); forceDock.remove(a.pkg)
+                } else {
+                    forceDock.add(a.pkg); forceGrid.remove(a.pkg)
+                }
+                prefs.edit().putStringSet(KEY_DOCK, HashSet<String>(forceDock))
+                    .putStringSet(KEY_GRID, HashSet<String>(forceGrid)).apply()
+                refreshAppRows()
+            }),
+            SItem("Version", value = ver),
+            SItem("Package", value = a.pkg),
+            SItem("Uninstall", value = "Asks to confirm", action = {
+                try {
+                    startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:" + a.pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    toast("This app cannot be uninstalled here.")
+                }
+            })
+        )
+    }
+
+    // ---- Bluetooth pairing ---------------------------------------------------------
+
+    private val btFound = ArrayList<android.bluetooth.BluetoothDevice>()
+    private var btRecv = false
+    private val btReceiver = object : BroadcastReceiver() {
+        @Suppress("DEPRECATION", "MissingPermission")
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                android.bluetooth.BluetoothDevice.ACTION_FOUND -> {
+                    val d = intent.getParcelableExtra<android.bluetooth.BluetoothDevice>(android.bluetooth.BluetoothDevice.EXTRA_DEVICE)
+                    if (d != null && btFound.none { it.address == d.address }) btFound.add(d)
+                }
+            }
+            if (settingsOpen && settingsStack.isNotEmpty() && settingsStack[settingsStack.size - 1].title == "Pair New Device") {
+                showSettingsPage(true)
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION", "MissingPermission")
+    private fun startBtDiscovery() {
+        try {
+            val bt = BluetoothAdapter.getDefaultAdapter() ?: return
+            if (!btRecv) {
+                val f = IntentFilter()
+                f.addAction(android.bluetooth.BluetoothDevice.ACTION_FOUND)
+                f.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+                f.addAction(android.bluetooth.BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+                registerReceiver(btReceiver, f)
+                btRecv = true
+            }
+            if (bt.isEnabled && !bt.isDiscovering) {
+                btFound.clear()
+                bt.startDiscovery()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "bt discovery failed", e)
+        }
+    }
+
+    @Suppress("DEPRECATION", "MissingPermission")
+    private fun stopBtDiscovery() {
+        try {
+            BluetoothAdapter.getDefaultAdapter()?.cancelDiscovery()
+        } catch (e: Exception) {
+            // ignore
+        }
+        if (btRecv) {
+            try { unregisterReceiver(btReceiver) } catch (e: Exception) { /* ignore */ }
+            btRecv = false
+        }
+    }
+
+    @Suppress("DEPRECATION", "MissingPermission")
+    private fun pairItems(): List<SItem> {
+        if (Build.VERSION.SDK_INT >= 31 && !hasPerm("android.permission.BLUETOOTH_SCAN")) {
+            return listOf(
+                SItem("Allow Nearby Devices", action = {
+                    try { requestPermissions(arrayOf("android.permission.BLUETOOTH_SCAN", BT_PERM), 79) } catch (e: Exception) { /* ignore */ }
+                })
+            )
+        }
+        if (Build.VERSION.SDK_INT < 31 && !hasPerm(LOC_PERM)) {
+            return listOf(
+                SItem("Allow Location (Android needs it to find devices)", action = {
+                    try { requestPermissions(arrayOf(LOC_PERM), 79) } catch (e: Exception) { /* ignore */ }
+                })
+            )
+        }
+        startBtDiscovery()
+        val bt = BluetoothAdapter.getDefaultAdapter()
+        val searching = try { bt?.isDiscovering == true } catch (e: Exception) { false }
+        val items = ArrayList<SItem>()
+        items.add(SItem(if (searching) "Searching… put your remote or device in pairing mode" else "Search Again",
+            note = searching, action = { btFound.clear(); stopBtDiscovery(); startBtDiscovery() }))
+        for (d in btFound.toList()) {
+            val name = (try { d.name } catch (e: Exception) { null }) ?: d.address
+            items.add(SItem(name, value = "Pair", action = {
+                try {
+                    bt?.cancelDiscovery()
+                    if (!d.createBond()) toast("Could not start pairing with $name")
+                } catch (e: Exception) {
+                    toast("Could not start pairing with $name")
+                }
+                refreshSettingsSoon(2000)
+            }))
+        }
+        return items
+    }
+
     // ---- Bluetooth / remotes ----------------------------------------------
 
     @Suppress("DEPRECATION", "MissingPermission")
@@ -3182,7 +3485,7 @@ class MainActivity : Activity() {
                 // ignore
             }
         }
-        items.add(SItem("Pair New Device…", action = sys(Settings.ACTION_BLUETOOTH_SETTINGS)))
+        if (on) items.add(SItem("Pair New Device", sub = { pairItems() }))
         return items
     }
 
@@ -3251,6 +3554,7 @@ class MainActivity : Activity() {
 
     private fun closeSettings(refocus: Boolean) {
         settingsOpen = false
+        stopBtDiscovery()
         settingsLayer.visibility = View.GONE
         homeGroup.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
         if (refocus) gearBtnView.requestFocus()
