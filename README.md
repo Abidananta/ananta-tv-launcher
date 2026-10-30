@@ -2,6 +2,16 @@
 
 Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cinematic background with purple/cyan glow, app discovery, D-pad navigation and a GitHub Actions APK build.
 
+## v20
+- **Movies / Series nav**: D-pad Up from the posters goes to the genre chips and then to the top menu (Home, All Apps, Movies, Series).
+- **Posters are never cropped** (artwork is fitted whole when its shape differs from the card; 600x900 artwork).
+- **Default Home**: on first start the launcher asks to become the Home app; also Settings > Home Screen > Make Ananta TV the default Home. Android cannot do this silently, you pick Ananta TV + Always once.
+
+## What's new in v19
+
+- **Audio stops instantly**: when you come back to the launcher (Home or Back) from an app you opened, the launcher takes audio focus, sends Pause/Stop to the active media session and clears that app's leftover background process. Music apps (Spotify, YouTube Music...) are left alone. New permission: `KILL_BACKGROUND_PROCESSES` (normal, granted automatically).
+- **Movies / Series redesign**: genre chips (All, Drama, Crime...), a big focused-title panel (title, year, genre, rank) at the top right, a glass "Play" pill on the focused poster, bigger focus zoom, gold accent bars on section headers.
+
 ## What's new in v4
 
 - **Alignment**: hero text, dock glass, row titles, the first card of every row and the top bar now share the same left/right edge (the edge of the dock glass). Dock app tiles are taller (aspect 0.74 instead of 0.60).
@@ -130,3 +140,6 @@ Movies / Series pages now start with **From your apps**: movies and series that 
 
 ## v17 (visual polish)
 Movies/Series: colour glow that follows the focused title, #rank badges (gold top 3), app chip on library cards, staggered entrance, tinted lift shadow. Home: hairline section headers, faint glass rim on tiles, bottom shade + tinted lift on Recently watched / Recommended cards, tinted lift on dock/All Apps tiles.
+
+## v18
+Home rows are sized to their real content (no dead space under Recommended / All Apps / Apps for you), tighter gaps between rows, glass-style focus on the hero "Open in..." button.

@@ -84,6 +84,9 @@ import java.util.concurrent.Executors
 import kotlin.math.cos
 import kotlin.math.sin
 
+/** The "set as default Home" question is asked once per app process, not every time you return from an app. */
+private var homePromptShown = false
+
 /** Soft drifting colored lights, used when there is no artwork. */
 class AuroraView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -506,6 +509,7 @@ class MainActivity : Activity() {
     private val KEY_GRID = "force_grid"
     private val KEY_24H = "clock_24h"
     private val KEY_PREV_VOL = "prev_volume"
+    private val KEY_NO_HOME_PROMPT = "no_home_prompt"
     private val COARSE_PERM = "android.permission.ACCESS_COARSE_LOCATION"
     private val NEARBY_PERM = "android.permission.NEARBY_WIFI_DEVICES"
     private val BT_PERM = "android.permission.BLUETOOTH_CONNECT"
@@ -672,6 +676,15 @@ class MainActivity : Activity() {
     private lateinit var pageLayer: FrameLayout
     private lateinit var pageTitle: TextView
     private lateinit var pageSub: TextView
+    private lateinit var pageChips: LinearLayout
+    private lateinit var pageInfo: LinearLayout
+    private lateinit var pageInfoTitle: TextView
+    private lateinit var pageInfoSub: TextView
+    private lateinit var pageInfoHint: TextView
+    private var pageGenre = "All"
+    private var pageSeries = false
+    private val chipViews = ArrayList<TextView>()
+    private val chipPaints = ArrayList<() -> Unit>()
     private lateinit var pageRv: RecyclerView
     private var pageOpen = false
     private var pageTint = Color.parseColor("#4a3aa8")
@@ -735,8 +748,10 @@ class MainActivity : Activity() {
         cardH = (cardW * 9f / 16f).toInt()
         slotCardW = cardW + 2 * gap
         val cardTextH = (screenW * 0.0115f * 1.5f + screenW * 0.0095f * 1.5f + screenW * 0.01f).toInt()
-        val feedRvH = cardH + cardTextH + gap * 2
-        val appsRvH = slotH + gap
+        val lineH = 1.25f                                    // generous text line height
+        val labelBlockH = (screenW * (0.0115f * lineH + 0.006f)).toInt()
+        val feedRvH = (gap * 0.6f).toInt() + cardH + labelBlockH + (screenW * 0.0095f * lineH).toInt() + (gap * 0.5f).toInt()
+        val appsRvH = (gap * 0.6f).toInt() + tileH + labelBlockH + (gap * 0.5f).toInt()
 
         allApps = loadApps()
         for (a in allApps) appByPkg[a.pkg] = a
@@ -859,9 +874,11 @@ class MainActivity : Activity() {
         heroBtn.setTextColor(Color.WHITE)
         heroBtn.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0125f)
         heroBtn.setTypeface(Typeface.DEFAULT_BOLD)
-        val btnBg = GradientDrawable()
+        val btnBg = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.argb(70, 255, 255, 255), Color.argb(40, 255, 255, 255))
+        )
         btnBg.cornerRadius = 400f
-        btnBg.setColor(Color.argb(80, 255, 255, 255))
         btnBg.setStroke(2, Color.argb(110, 255, 255, 255))
         heroBtn.background = btnBg
         val bhPad = (screenW * 0.022f).toInt()
@@ -874,8 +891,14 @@ class MainActivity : Activity() {
         heroBtn.setOnFocusChangeListener { v, focused ->
             val s = if (focused) 1.08f else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(150).start()
-            btnBg.setColor(if (focused) Color.WHITE else Color.argb(80, 255, 255, 255))
-            heroBtn.setTextColor(if (focused) Color.BLACK else Color.WHITE)
+            if (focused) {
+                btnBg.setColors(intArrayOf(Color.argb(150, 255, 255, 255), Color.argb(70, 255, 255, 255)))
+                btnBg.setStroke(2, Color.argb(220, 255, 255, 255))
+            } else {
+                btnBg.setColors(intArrayOf(Color.argb(70, 255, 255, 255), Color.argb(40, 255, 255, 255)))
+                btnBg.setStroke(2, Color.argb(110, 255, 255, 255))
+            }
+            heroBtn.setTextColor(Color.WHITE)
         }
         heroBtn.setOnClickListener { launchHero(currentItem) }
         heroBtn.setOnKeyListener { _, keyCode, ev ->
@@ -911,7 +934,7 @@ class MainActivity : Activity() {
         content.orientation = LinearLayout.VERTICAL
         content.clipChildren = false
         content.clipToPadding = false
-        content.setPadding(0, 0, 0, (screenH * 0.06f).toInt())
+        content.setPadding(0, 0, 0, (screenH * 0.025f).toInt())
 
         val spacer = FrameLayout(this)
         spacer.clipChildren = false
@@ -1024,7 +1047,7 @@ class MainActivity : Activity() {
                 R_APPS, "ALL APPS", "Hold OK on any app to move it between the dock and All Apps",
                 appsRvH, appsAdapter, tileStartX, ""
             ),
-            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.018f).toInt() }
         )
         appsRv = rowRv[R_APPS]!!
         content.addView(
@@ -1032,7 +1055,7 @@ class MainActivity : Activity() {
                 R_REC, "RECOMMENDED", null, feedRvH, recAdapter, tileStartX,
                 "Recommendations from your apps will appear here."
             ),
-            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.018f).toInt() }
         )
         storeItems.addAll(computeStore())
         storeAdapter = StoreAdapter()
@@ -1041,7 +1064,7 @@ class MainActivity : Activity() {
                 R_STORE, "APPS FOR YOU", "Install from Google Play", appsRvH, storeAdapter, tileStartX,
                 "No suggestions right now."
             ),
-            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.03f).toInt() }
+            LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = (screenH * 0.018f).toInt() }
         )
         updateEmpty(R_RECENT)
         updateEmpty(R_REC)
@@ -1270,6 +1293,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        silenceLaunchedApps()
         failed.clear()
         if (::storeAdapter.isInitialized) refreshStore()
         refreshAccount()
@@ -1286,9 +1310,85 @@ class MainActivity : Activity() {
             handler.postDelayed(wifiTick, WIFI_SCAN_EVERY_MS)
         }
         if (settingsOpen) showSettingsPage(true)
+        checkDefaultHome()
+    }
+
+    // ---- default Home app -------------------------------------------------------------------------
+
+    private fun homeIntent(): Intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+
+    private fun homeResolve(): android.content.pm.ResolveInfo? =
+        try { packageManager.resolveActivity(homeIntent(), PackageManager.MATCH_DEFAULT_ONLY) } catch (e: Exception) { null }
+
+    /** True when pressing Home on the remote opens this launcher without asking. */
+    private fun isDefaultHome(): Boolean = homeResolve()?.activityInfo?.packageName == packageName
+
+    private fun fakeHome() = android.content.ComponentName(packageName, "com.example.tvlauncher.FakeHome")
+
+    private fun setFakeHome(on: Boolean) {
+        try {
+            packageManager.setComponentEnabledSetting(
+                fakeHome(),
+                if (on) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "fake home toggle failed", e)
+        }
+    }
+
+    /**
+     * Android never lets an app make itself the Home app silently. What we can do is make the system forget
+     * the old "Always" choice (a second Home entry appears for a moment, which invalidates it) and then
+     * open the Home chooser, so the user only has to pick Ananta TV + Always once.
+     */
+    private fun setAsDefaultHome() {
+        if (isDefaultHome()) {
+            Toast.makeText(this, "Ananta TV is already your Home app", Toast.LENGTH_SHORT).show()
+            return
+        }
+        setFakeHome(true)
+        handler.postDelayed({
+            try {
+                startActivity(homeIntent().addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_HOME_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e2: Exception) {
+                    openSystem(Settings.ACTION_SETTINGS)
+                }
+            }
+        }, 400)
+    }
+
+    private fun checkDefaultHome() {
+        val ri = homeResolve()
+        val pkg = ri?.activityInfo?.packageName
+        val name = ri?.activityInfo?.name ?: ""
+        if (pkg == packageName) {
+            // chosen: keep the helper entry only if the user picked that one, otherwise remove it again
+            if (!name.endsWith("FakeHome")) setFakeHome(false)
+            return
+        }
+        if (homePromptShown || settingsOpen || pageOpen || wifiOpen) return
+        if (prefs.getBoolean(KEY_NO_HOME_PROMPT, false)) return
+        homePromptShown = true
+        try {
+            AlertDialog.Builder(this)
+                .setTitle("Make Ananta TV your Home screen?")
+                .setMessage("Then the Home button on the remote always opens this launcher instead of the old one. " +
+                    "On the next screen choose Ananta TV and tap Always.")
+                .setPositiveButton("Set as default") { _, _ -> setAsDefaultHome() }
+                .setNegativeButton("Later", null)
+                .setNeutralButton("Don't ask again") { _, _ -> prefs.edit().putBoolean(KEY_NO_HOME_PROMPT, true).apply() }
+                .show()
+        } catch (e: Exception) {
+            Log.w(TAG, "home prompt failed", e)
+        }
     }
 
     override fun onPause() {
+        silenceRound?.let { handler.removeCallbacks(it) }
         handler.removeCallbacks(rotator)
         handler.removeCallbacks(statusTick)
         handler.removeCallbacks(wifiTick)
@@ -1309,6 +1409,44 @@ class MainActivity : Activity() {
         appsRv.scrollToPosition(0)
         scroll.scrollTo(0, 0)
         focusDock()
+    }
+
+    private fun isInside(v: View?, parent: View): Boolean {
+        var p: View? = v
+        while (p != null) {
+            if (p === parent) return true
+            p = p.parent as? View
+        }
+        return false
+    }
+
+    /**
+     * Movies / Series / All Apps pages: D-pad Up from the first row of posters goes to the genre chips,
+     * and from the chips (or the first row when there are no chips) up to the top nav bar.
+     * Android's own focus search was not reliably reaching the nav bar from inside the RecyclerView.
+     */
+    override fun dispatchKeyEvent(ev: KeyEvent): Boolean {
+        if (pageOpen && !wifiOpen && !settingsOpen &&
+            ev.action == KeyEvent.ACTION_DOWN && ev.keyCode == KeyEvent.KEYCODE_DPAD_UP
+        ) {
+            val f = currentFocus
+            if (f != null) {
+                val navTarget = navViews.getOrNull(navSelected) ?: navViews.firstOrNull()
+                if (chipViews.contains(f)) {
+                    navTarget?.requestFocus()
+                    return true
+                }
+                if (isInside(f, pageRv)) {
+                    val next = f.focusSearch(View.FOCUS_UP)
+                    if (next == null || !isInside(next, pageRv)) {
+                        if (pageChips.visibility == View.VISIBLE && chipViews.isNotEmpty()) focusChips()
+                        else navTarget?.requestFocus()
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(ev)
     }
 
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
@@ -1514,8 +1652,10 @@ class MainActivity : Activity() {
             val i = Intent.parseUri(item.intentUri.orEmpty(), Intent.URI_INTENT_SCHEME)
             i.selector = null
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            noteLaunched(item.pkg)
             startActivity(i)
         } catch (e: Exception) {
+            noteLaunched(item.pkg)
             packageManager.getLeanbackLaunchIntentForPackage(item.pkg)?.let { startActivity(it) }
         }
     }
@@ -1874,6 +2014,56 @@ class MainActivity : Activity() {
         }
     }
 
+    // =====================================================================
+    // Silence the apps we launched as soon as we are back on the home screen
+    // =====================================================================
+
+    private val launchedPkgs = HashSet<String>()
+    private var silenceRound: Runnable? = null
+    private val silenceFocus = AudioManager.OnAudioFocusChangeListener { }
+    // pure music / radio apps are left alone so background music keeps working
+    private val KEEP_PLAYING = listOf("spotify", "tvmusic", "music", "podcast", "radio")
+
+    private fun noteLaunched(pkg: String?) {
+        if (pkg.isNullOrEmpty() || pkg == packageName) return
+        launchedPkgs.add(pkg)
+    }
+
+    /**
+     * Called from onResume (Home / Back from an OTT app). Takes audio focus, sends Pause + Stop to the active
+     * media session and kills the leftover background process of the app, so the sound stops at once.
+     */
+    @Suppress("DEPRECATION")
+    private fun silenceLaunchedApps() {
+        if (launchedPkgs.isEmpty()) return
+        val pkgs = launchedPkgs.filter { p -> KEEP_PLAYING.none { p.lowercase().contains(it) } }
+        launchedPkgs.clear()
+        if (pkgs.isEmpty()) return
+        val round = Runnable {
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.requestAudioFocus(silenceFocus, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+                for (code in intArrayOf(KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP)) {
+                    am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                    am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+                }
+            } catch (e: Exception) {
+                Log.w("TvLauncher", "audio stop failed", e)
+            }
+            try {
+                val act = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                for (p in pkgs) act.killBackgroundProcesses(p)
+            } catch (e: Exception) {
+                Log.w("TvLauncher", "kill failed", e)
+            }
+        }
+        silenceRound?.let { handler.removeCallbacks(it) }
+        silenceRound = round
+        round.run()
+        handler.postDelayed(round, 500)
+        handler.postDelayed(round, 1500)
+    }
+
     private fun launchApp(app: AppItem) {
         try {
             if (app.pkg == SETTINGS_PKG) {
@@ -1881,7 +2071,7 @@ class MainActivity : Activity() {
             } else {
                 val i = packageManager.getLeanbackLaunchIntentForPackage(app.pkg)
                     ?: packageManager.getLaunchIntentForPackage(app.pkg)
-                if (i != null) startActivity(i)
+                if (i != null) { noteLaunched(app.pkg); startActivity(i) }
             }
         } catch (e: Exception) {
             // ignore
@@ -2781,7 +2971,7 @@ class MainActivity : Activity() {
         v.setOnClickListener { onClick() }
         v.setOnKeyListener { _, keyCode, ev ->
             if (ev.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                if (pageOpen) focusPageFirst() else focusDock()
+                if (pageOpen) { if (pageChips.visibility == View.VISIBLE) focusChips() else focusPageFirst() } else focusDock()
                 true
             } else false
         }
@@ -2841,6 +3031,48 @@ class MainActivity : Activity() {
         slp.setMargins(startX, (screenH * 0.15f + screenW * 0.045f).toInt(), 0, 0)
         layer.addView(pageSub, slp)
 
+        // genre chips (Movies / Series only), same spot as the subtitle
+        pageChips = LinearLayout(this)
+        pageChips.orientation = LinearLayout.HORIZONTAL
+        pageChips.gravity = Gravity.CENTER_VERTICAL
+        pageChips.clipChildren = false
+        pageChips.visibility = View.GONE
+        val chlp = FrameLayout.LayoutParams(WRAP, (screenW * 0.026f).toInt(), Gravity.TOP or Gravity.START)
+        chlp.setMargins(startX, (screenH * 0.15f + screenW * 0.05f).toInt(), 0, 0)
+        layer.addView(pageChips, chlp)
+
+        // focused-title panel (top right): big title, details, hint
+        pageInfo = LinearLayout(this)
+        pageInfo.orientation = LinearLayout.VERTICAL
+        pageInfo.gravity = Gravity.END
+        pageInfo.visibility = View.GONE
+        pageInfoTitle = TextView(this)
+        pageInfoTitle.setTextColor(Color.WHITE)
+        pageInfoTitle.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.02f)
+        pageInfoTitle.typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        pageInfoTitle.maxLines = 2
+        pageInfoTitle.ellipsize = TextUtils.TruncateAt.END
+        pageInfoTitle.gravity = Gravity.END
+        pageInfoTitle.setShadowLayer(16f, 0f, 4f, Color.argb(160, 0, 0, 0))
+        pageInfoSub = TextView(this)
+        pageInfoSub.setTextColor(Color.argb(210, 255, 255, 255))
+        pageInfoSub.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0115f)
+        pageInfoSub.gravity = Gravity.END
+        pageInfoSub.setPadding(0, (screenW * 0.004f).toInt(), 0, 0)
+        pageInfoHint = TextView(this)
+        pageInfoHint.setTextColor(GOLD)
+        pageInfoHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+        pageInfoHint.setTypeface(Typeface.DEFAULT_BOLD)
+        pageInfoHint.letterSpacing = 0.08f
+        pageInfoHint.gravity = Gravity.END
+        pageInfoHint.setPadding(0, (screenW * 0.005f).toInt(), 0, 0)
+        pageInfo.addView(pageInfoTitle, LinearLayout.LayoutParams(MATCH, WRAP))
+        pageInfo.addView(pageInfoSub, LinearLayout.LayoutParams(MATCH, WRAP))
+        pageInfo.addView(pageInfoHint, LinearLayout.LayoutParams(MATCH, WRAP))
+        val inlp = FrameLayout.LayoutParams((screenW * 0.36f).toInt(), WRAP, Gravity.TOP or Gravity.END)
+        inlp.setMargins(0, (screenH * 0.15f).toInt(), startX, 0)
+        layer.addView(pageInfo, inlp)
+
         pageRv = RecyclerView(this)
         pageRv.clipChildren = false
         pageRv.clipToPadding = false
@@ -2864,43 +3096,27 @@ class MainActivity : Activity() {
                 val list = allApps.filter { it.pkg != SETTINGS_PKG }.sortedBy { it.label.lowercase() }
                 pageTitle.text = "All Apps"
                 pageSub.text = "${list.size} installed apps"
+                pageSub.visibility = View.VISIBLE
+                pageChips.visibility = View.GONE
+                pageInfo.visibility = View.GONE
+                setPageTop(false)
                 val cols = (availW / slotW).coerceAtLeast(1)
                 pageRv.layoutManager = GridLayoutManager(this, cols)
                 pageRv.adapter = PageAdapter(list.size, availW / cols, { tileW }) { buildTile(list[it], -1) }
             }
             else -> {
-                val series = kind == PAGE_SERIES
-                val lib = if (series) libSeries else libMovies
-                val curated = if (series) SERIES else MOVIES
-                val entries = ArrayList<PageEntry>()
-                if (lib.isNotEmpty()) {
-                    entries.add(PageEntry(header = "FROM YOUR APPS"))
-                    for (h in lib) entries.add(PageEntry(hero = h))
-                }
-                entries.add(PageEntry(header = if (series) "TOP-RATED SERIES" else "TOP-RATED MOVIES"))
-                for ((ci, c) in curated.withIndex()) entries.add(PageEntry(poster = c, rank = ci + 1))
-                pageTitle.text = if (series) "Series" else "Movies"
-                pageSub.text = if (lib.isNotEmpty()) "Picked from your installed apps, plus the best of all time  \u00b7  press OK to watch"
-                    else "The best of all time  \u00b7  press OK to watch"
-                val cols = 7
-                val slotPw = availW / cols
-                val posW = slotPw - (gap * 1.2f).toInt()
-                val posH = (posW * 1.5f).toInt()
-                val gm = GridLayoutManager(this, cols)
-                gm.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
-                    override fun getSpanSize(position: Int): Int = if (entries[position].header != null) cols else 1
-                }
-                pageRv.layoutManager = gm
-                pageRv.adapter = PageAdapter(entries.size, slotPw, { i ->
-                    if (entries[i].header != null) availW - gap * 2 else posW
-                }) { i ->
-                    val e = entries[i]
-                    when {
-                        e.header != null -> buildPageHeader(e.header)
-                        e.hero != null -> buildLibCard(e.hero, posW, posH)
-                        else -> buildPoster(e.poster!!, series, posW, posH, e.rank)
-                    }
-                }
+                pageSeries = kind == PAGE_SERIES
+                pageGenre = "All"
+                pageTitle.text = if (pageSeries) "Series" else "Movies"
+                pageSub.visibility = View.GONE
+                pageInfoTitle.text = ""
+                pageInfoSub.text = ""
+                pageInfoHint.text = ""
+                pageInfo.visibility = View.VISIBLE
+                buildChips()
+                pageChips.visibility = View.VISIBLE
+                setPageTop(true)
+                showTitlesPage()
             }
         }
         pageOpen = true
@@ -2912,6 +3128,146 @@ class MainActivity : Activity() {
         pageLayer.animate().alpha(1f).setDuration(200).start()
         pageRv.scrollToPosition(0)
         handler.postDelayed({ if (pageOpen) focusPageFirst() }, 150)
+    }
+
+    /** Moves the grid down a little on Movies / Series so the genre chips fit above it. */
+    private fun setPageTop(chips: Boolean) {
+        val lp = pageRv.layoutParams as FrameLayout.LayoutParams
+        lp.topMargin = (screenH * 0.15f + screenW * (if (chips) 0.08f else 0.065f)).toInt()
+        pageRv.layoutParams = lp
+    }
+
+    private fun pageGenres(series: Boolean): List<String> {
+        val curated = if (series) SERIES else MOVIES
+        val top = curated.groupingBy { it.genre }.eachCount().entries
+            .sortedByDescending { it.value }.take(6).map { it.key }
+        return listOf("All") + top
+    }
+
+    private fun buildChips() {
+        pageChips.removeAllViews()
+        chipViews.clear()
+        chipPaints.clear()
+        val h = (screenW * 0.026f).toInt()
+        for (g in pageGenres(pageSeries)) {
+            val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT))
+            bg.cornerRadius = 200f
+            val tv = TextView(this)
+            tv.text = g
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+            tv.setTypeface(Typeface.DEFAULT_BOLD)
+            tv.gravity = Gravity.CENTER
+            val hp = (screenW * 0.012f).toInt()
+            tv.setPadding(hp, 0, hp, 0)
+            tv.background = bg
+            tv.isFocusable = true
+            tv.isClickable = true
+            if (Build.VERSION.SDK_INT >= 26) tv.defaultFocusHighlightEnabled = false
+            val paint: () -> Unit = {
+                val sel = pageGenre == g
+                if (sel) {
+                    bg.setColors(intArrayOf(Color.argb(240, 255, 255, 255), Color.argb(215, 255, 255, 255)))
+                    bg.setStroke(2, Color.argb(255, 255, 255, 255))
+                    tv.setTextColor(Color.rgb(16, 18, 28))
+                    tv.alpha = 1f
+                } else {
+                    glassFocus(bg, tv.isFocused, false)
+                    tv.setTextColor(Color.WHITE)
+                    tv.alpha = if (tv.isFocused) 1f else 0.78f
+                }
+            }
+            tv.setOnFocusChangeListener { v, focused ->
+                val sc = if (focused) 1.1f else 1f
+                v.animate().scaleX(sc).scaleY(sc).setDuration(150).start()
+                paint()
+            }
+            tv.setOnClickListener {
+                pageGenre = g
+                for (c in chipPaints) c()
+                showTitlesPage()
+                pageRv.scrollToPosition(0)
+            }
+            chipViews.add(tv)
+            chipPaints.add(paint)
+            val lp = LinearLayout.LayoutParams(WRAP, h)
+            lp.rightMargin = (screenW * 0.006f).toInt()
+            pageChips.addView(tv, lp)
+            paint()
+        }
+    }
+
+    private fun focusChips() {
+        (chipViews.firstOrNull { it.text.toString() == pageGenre } ?: chipViews.firstOrNull())?.requestFocus()
+    }
+
+    /** Fills the Movies / Series grid for the selected genre chip. */
+    private fun showTitlesPage() {
+        val series = pageSeries
+        val availW = screenW - 2 * outer + 2 * gap
+        val lib = if (series) libSeries else libMovies
+        val curated = if (series) SERIES else MOVIES
+        val all = pageGenre == "All"
+        val entries = ArrayList<PageEntry>()
+        if (all && lib.isNotEmpty()) {
+            entries.add(PageEntry(header = "FROM YOUR APPS"))
+            for (h in lib) entries.add(PageEntry(hero = h))
+        }
+        val what = if (series) "SERIES" else "MOVIES"
+        entries.add(PageEntry(header = if (all) "TOP-RATED $what" else "TOP-RATED " + pageGenre.uppercase()))
+        for ((ci, c) in curated.withIndex()) if (all || c.genre == pageGenre) entries.add(PageEntry(poster = c, rank = ci + 1))
+        val cols = 7
+        val slotPw = availW / cols
+        val posW = slotPw - (gap * 1.2f).toInt()
+        val posH = (posW * 1.5f).toInt()
+        val gm = GridLayoutManager(this, cols)
+        gm.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+            override fun getSpanSize(position: Int): Int = if (entries[position].header != null) cols else 1
+        }
+        pageRv.layoutManager = gm
+        pageRv.adapter = PageAdapter(entries.size, slotPw, { i ->
+            if (entries[i].header != null) availW - gap * 2 else posW
+        }) { i ->
+            val e = entries[i]
+            when {
+                e.header != null -> buildPageHeader(e.header)
+                e.hero != null -> buildLibCard(e.hero, posW, posH)
+                else -> buildPoster(e.poster!!, series, posW, posH, e.rank)
+            }
+        }
+    }
+
+    /** Big title + details of the card under focus (top right), fades in. */
+    private fun showPageInfo(title: String, line: String) {
+        pageInfoTitle.animate().cancel()
+        pageInfoSub.animate().cancel()
+        pageInfoHint.animate().cancel()
+        pageInfoTitle.alpha = 0f
+        pageInfoSub.alpha = 0f
+        pageInfoHint.alpha = 0f
+        pageInfoTitle.text = title
+        pageInfoSub.text = line
+        pageInfoHint.text = "\u25B6  PRESS OK TO WATCH"
+        pageInfoTitle.animate().alpha(1f).setDuration(200).start()
+        pageInfoSub.animate().alpha(1f).setDuration(260).start()
+        pageInfoHint.animate().alpha(0.9f).setDuration(320).start()
+    }
+
+    /** Glass "Play" pill that fades in on the focused poster. */
+    private fun playPill(): TextView {
+        val t = TextView(this)
+        t.text = "\u25B6  Play"
+        t.setTextColor(Color.WHITE)
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
+        t.setTypeface(Typeface.DEFAULT_BOLD)
+        val bb = GradientDrawable()
+        bb.cornerRadius = 200f
+        bb.setColor(Color.argb(150, 0, 0, 0))
+        bb.setStroke(2, Color.argb(190, 255, 255, 255))
+        t.background = bb
+        val hp = (screenW * 0.011f).toInt()
+        t.setPadding(hp, (hp * 0.4f).toInt(), hp, (hp * 0.4f).toInt())
+        t.alpha = 0f
+        return t
     }
 
     private fun applyPageTint(c: Int) {
@@ -3006,6 +3362,14 @@ class MainActivity : Activity() {
         t.setTextSize(TypedValue.COMPLEX_UNIT_PX, screenW * 0.0105f)
         t.setTypeface(Typeface.DEFAULT_BOLD)
         t.letterSpacing = 0.3f
+        val bar = View(this)
+        val barBg = GradientDrawable()
+        barBg.cornerRadius = 100f
+        barBg.setColor(GOLD)
+        bar.background = barBg
+        val barLp = LinearLayout.LayoutParams((screenW * 0.0035f).toInt().coerceAtLeast(4), (screenW * 0.0125f).toInt())
+        barLp.rightMargin = (screenW * 0.007f).toInt()
+        row.addView(bar, barLp)
         row.addView(t, LinearLayout.LayoutParams(WRAP, WRAP))
         val line = View(this)
         line.background = GradientDrawable(
@@ -3049,6 +3413,7 @@ class MainActivity : Activity() {
         img.alpha = 0f
         card.addView(img, FrameLayout.LayoutParams(MATCH, MATCH))
         loadInto(img, item.images, (cw * 1.3f).toInt()) {
+            fitArt(img, cw, ch, card)
             ph.visibility = View.GONE
             img.animate().alpha(1f).setDuration(250).start()
         }
@@ -3079,6 +3444,10 @@ class MainActivity : Activity() {
             card.outlineSpotShadowColor = tint
             card.outlineAmbientShadowColor = tint
         }
+        val play = playPill()
+        val plp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        plp.bottomMargin = (gap * 0.9f).toInt()
+        card.addView(play, plp)
         val ring = View(this)
         val ringBg = GradientDrawable()
         ringBg.cornerRadius = r
@@ -3116,16 +3485,45 @@ class MainActivity : Activity() {
         col.pivotY = ch / 2f
         if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
         col.setOnFocusChangeListener { v, focused ->
-            val sc = if (focused) 1.1f else 1f
+            val sc = if (focused) 1.12f else 1f
             v.animate().scaleX(sc).scaleY(sc).setDuration(170).start()
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
             card.animate().translationZ(if (focused) 26f else 0f).setDuration(170).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
-            if (focused) setPageTint(tint)
+            play.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            if (focused) {
+                setPageTint(tint)
+                showPageInfo(item.title.orEmpty(), "on " + (app?.label ?: item.pkg) + "  \u00b7  from your apps")
+            }
         }
         col.setOnClickListener { launchHero(item) }
         return col
+    }
+
+    /**
+     * Shows the artwork without cutting anything off: when the picture has (nearly) the card's shape it
+     * fills the card, otherwise it is fitted whole inside it. For wide app artwork the card is made
+     * as tall as the picture needs (never taller than [ch]) so there is no big empty band.
+     */
+    private fun fitArt(img: ImageView, cw: Int, ch: Int, card: View?) {
+        val d = img.drawable ?: return
+        val iw = d.intrinsicWidth
+        val ih = d.intrinsicHeight
+        if (iw <= 0 || ih <= 0) return
+        val art = iw.toFloat() / ih
+        var boxH = ch
+        if (card != null) {
+            boxH = (cw / art).toInt().coerceIn((cw * 9f / 16f).toInt(), ch)
+            val lp = card.layoutParams
+            if (lp != null && lp.height != boxH) {
+                lp.height = boxH
+                card.layoutParams = lp
+            }
+        }
+        val box = cw.toFloat() / boxH
+        img.scaleType = if (Math.abs(art / box - 1f) <= 0.12f) ImageView.ScaleType.CENTER_CROP
+        else ImageView.ScaleType.FIT_CENTER
     }
 
     /** Poster card for Movies / Series. Artwork is looked up online; until it arrives the card shows the title. */
@@ -3168,6 +3566,7 @@ class MainActivity : Activity() {
         val key = (if (series) "s:" else "m:") + p.title
         val show = { url: String ->
             loadInto(img, listOf(url), (cw * 1.3f).toInt()) {
+                fitArt(img, cw, ch, null)
                 fallback.visibility = View.GONE
                 img.animate().alpha(1f).setDuration(250).start()
             }
@@ -3213,6 +3612,10 @@ class MainActivity : Activity() {
             card.outlineAmbientShadowColor = tint
         }
 
+        val play = playPill()
+        val plp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        plp.bottomMargin = (gap * 0.9f).toInt()
+        card.addView(play, plp)
         val ring = View(this)
         val ringBg = GradientDrawable()
         ringBg.cornerRadius = r
@@ -3251,19 +3654,25 @@ class MainActivity : Activity() {
         col.pivotY = ch / 2f
         if (Build.VERSION.SDK_INT >= 26) col.defaultFocusHighlightEnabled = false
         col.setOnFocusChangeListener { v, focused ->
-            val sc = if (focused) 1.1f else 1f
+            val sc = if (focused) 1.12f else 1f
             v.animate().scaleX(sc).scaleY(sc).setDuration(170).start()
             (v.parent as? View)?.translationZ = if (focused) 20f else 0f
             card.animate().translationZ(if (focused) 26f else 0f).setDuration(170).start()
             ring.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
             title.animate().alpha(if (focused) 1f else 0.8f).setDuration(160).start()
-            if (focused) setPageTint(tint)
+            play.animate().alpha(if (focused) 1f else 0f).setDuration(160).start()
+            if (focused) {
+                setPageTint(tint)
+                showPageInfo(p.title, p.year + "  \u00b7  " + p.genre + (if (rank > 0) "  \u00b7  Top rated #" + rank else ""))
+            }
         }
         col.setOnClickListener { openTitle(p, series) }
         return col
     }
 
     private fun openTrailer(p: Poster, series: Boolean) {
+        noteLaunched("com.google.android.youtube.tv")
+        noteLaunched("com.google.android.youtube")
         try {
             val q = java.net.URLEncoder.encode(p.title + " " + p.year + (if (series) " series" else " movie") + " official trailer", "UTF-8")
             val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + q))
@@ -3324,6 +3733,7 @@ class MainActivity : Activity() {
 
     /** Opens the OTT app on a search for the title; if the app refuses the link, just opens the app. */
     private fun openInOtt(o: Ott, p: Poster) {
+        noteLaunched(o.pkg)
         try {
             val q = java.net.URLEncoder.encode(p.title, "UTF-8")
             val i = Intent(Intent.ACTION_VIEW, Uri.parse(o.searchUrl.replace("%s", q)))
@@ -3418,7 +3828,7 @@ class MainActivity : Activity() {
                     best = art
                 }
             }
-            val url = best?.replace(Regex("\\d+x\\d+bb"), "400x600bb") ?: return null
+            val url = best?.replace(Regex("\\d+x\\d+bb"), "600x900bb") ?: return null
             posterUrls[key] = url
             return url
         } catch (e: Exception) {
@@ -4015,7 +4425,14 @@ class MainActivity : Activity() {
             SItem("Apps", 5, Color.parseColor("#0a84ff"), sub = { appsItems() }),
             SItem("Network", 6, Color.parseColor("#30b0c7"), value = net, sub = { networkItems() }),
             SItem("Home Screen", 8, Color.parseColor("#ff375f"), sub = {
-                listOf(SItem("Reset Dock and All Apps", action = { resetLayout() }))
+                listOf(
+                    SItem(
+                        "Make Ananta TV the default Home",
+                        value = if (isDefaultHome()) "Already default" else null,
+                        action = { setAsDefaultHome() }
+                    ),
+                    SItem("Reset Dock and All Apps", action = { resetLayout() })
+                )
             }),
             SItem("System", 7, Color.parseColor("#636366"), sub = {
                 listOf(
