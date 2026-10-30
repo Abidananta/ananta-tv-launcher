@@ -1366,8 +1366,6 @@ class MainActivity : Activity() {
         val pkg = ri?.activityInfo?.packageName
         val name = ri?.activityInfo?.name ?: ""
         if (pkg == packageName) {
-            // chosen: keep the helper entry only if the user picked that one, otherwise remove it again
-            if (!name.endsWith("FakeHome")) setFakeHome(false)
             return
         }
         if (homePromptShown || settingsOpen || pageOpen || wifiOpen) return
@@ -1437,8 +1435,17 @@ class MainActivity : Activity() {
                     return true
                 }
                 if (isInside(f, pageRv)) {
-                    val next = f.focusSearch(View.FOCUS_UP)
-                    if (next == null || !isInside(next, pageRv)) {
+                    // top focusable row = no focusable card above the focused one and the list cannot scroll up
+                    var item: View = f
+                    while (item.parent != null && item.parent !== pageRv) item = item.parent as? View ?: break
+                    var topMost = true
+                    for (i in 0 until pageRv.childCount) {
+                        val c = pageRv.getChildAt(i)
+                        if (c === item) continue
+                        val t = (c as? ViewGroup)?.getChildAt(0) ?: c
+                        if (t.isFocusable && c.top < item.top - 2) { topMost = false; break }
+                    }
+                    if (topMost && !pageRv.canScrollVertically(-1)) {
                         if (pageChips.visibility == View.VISIBLE && chipViews.isNotEmpty()) focusChips()
                         else navTarget?.requestFocus()
                         return true
@@ -3501,28 +3508,16 @@ class MainActivity : Activity() {
         return col
     }
 
-    /**
-     * Shows the artwork without cutting anything off: when the picture has (nearly) the card's shape it
-     * fills the card, otherwise it is fitted whole inside it. For wide app artwork the card is made
-     * as tall as the picture needs (never taller than [ch]) so there is no big empty band.
-     */
+    /** Shows the artwork without cutting anything off; the card keeps its size. */
     private fun fitArt(img: ImageView, cw: Int, ch: Int, card: View?) {
         val d = img.drawable ?: return
         val iw = d.intrinsicWidth
         val ih = d.intrinsicHeight
         if (iw <= 0 || ih <= 0) return
         val art = iw.toFloat() / ih
-        var boxH = ch
-        if (card != null) {
-            boxH = (cw / art).toInt().coerceIn((cw * 9f / 16f).toInt(), ch)
-            val lp = card.layoutParams
-            if (lp != null && lp.height != boxH) {
-                lp.height = boxH
-                card.layoutParams = lp
-            }
-        }
-        val box = cw.toFloat() / boxH
-        img.scaleType = if (Math.abs(art / box - 1f) <= 0.12f) ImageView.ScaleType.CENTER_CROP
+        val box = cw.toFloat() / ch
+        // card size never changes; the picture is shown whole (fills the card when the shapes match)
+        img.scaleType = if (Math.abs(art / box - 1f) <= 0.06f) ImageView.ScaleType.CENTER_CROP
         else ImageView.ScaleType.FIT_CENTER
     }
 
@@ -4430,6 +4425,11 @@ class MainActivity : Activity() {
                         "Make Ananta TV the default Home",
                         value = if (isDefaultHome()) "Already default" else null,
                         action = { setAsDefaultHome() }
+                    ),
+                    SItem(
+                        "If it does not stick, run on a PC: adb shell cmd package set-home-activity " +
+                            "com.example.tvlauncher/.MainActivity",
+                        note = true
                     ),
                     SItem("Reset Dock and All Apps", action = { resetLayout() })
                 )

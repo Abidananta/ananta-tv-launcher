@@ -2,6 +2,9 @@
 
 Apple TV-inspired Android TV home launcher starter for Xiaomi Mi Box 4. Dark cinematic background with purple/cyan glow, app discovery, D-pad navigation and a GitHub Actions APK build.
 
+## v21
+- Posters keep the original size and are never cropped. Top nav reachable from Movies/Series/All Apps (Up from first row -> chips -> nav). Default Home: helper entry stays enabled so the Always choice sticks; if Android still refuses: `adb shell cmd package set-home-activity com.example.tvlauncher/.MainActivity`.
+
 ## v20
 - **Movies / Series nav**: D-pad Up from the posters goes to the genre chips and then to the top menu (Home, All Apps, Movies, Series).
 - **Posters are never cropped** (artwork is fitted whole when its shape differs from the card; 600x900 artwork).

@@ -59,8 +59,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Switched on only while asking Android "which Home app?" so the old "Always" choice is forgotten,
-             then switched off again. Same screen as MainActivity. -->
+        <!-- Switched on while asking Android "which Home app?" so the old "Always" choice is forgotten;
+             stays on afterwards so the saved choice keeps matching. Same screen as MainActivity. -->
         <activity-alias
             android:name=".FakeHome"
             android:enabled="false"
